@@ -43,8 +43,8 @@ class TestLoadVideoPointerInfo:
                     "code": 0,
                     "data": {
                         "questionPoint": [
-                            {"timeSec": 120, "questionIds": [1, 2]},
-                            {"timeSec": 300, "questionIds": [3]},
+                            {"timeSec": 120, "questionIds": "1,2"},
+                            {"timeSec": 300, "questionIds": "3"},
                         ]
                     },
                 },
@@ -54,7 +54,7 @@ class TestLoadVideoPointerInfo:
         points = quizzer.load_video_pointer_info("ABC123", 100)
         assert len(points) == 2
         assert points[0].time_sec == 120
-        assert points[0].question_ids == [1, 2]
+        assert points[0].question_ids == "1,2"
         assert points[1].time_sec == 300
 
     def test_empty_question_points(self, mock_session: ZhsSession) -> None:
@@ -150,6 +150,23 @@ class TestAnswerDelay:
 
 class TestGetPopupExam:
     """get_popup_exam 测试"""
+
+    def test_question_ids_sent_verbatim(self, mock_session: ZhsSession, monkeypatch: pytest.MonkeyPatch) -> None:
+        """回归：questionIds 必须原样发送 loadVideoPointerInfo 返回的字符串
+
+        实测服务端对 list 形式的 questionIds 返回 code=-1（系统发生了不可预期的错误），
+        原样字符串才返回 code=0。
+        """
+        captured: dict[str, object] = {}
+
+        def fake_query(url: str, data: dict[str, object]) -> dict[str, object]:
+            captured.update(data)
+            return {"data": {"lessonTestQuestionUseInterfaceDtos": []}}
+
+        monkeypatch.setattr(mock_session, "zhidao_query", fake_query)
+        quizzer = ZhidaoQuizzer(mock_session)
+        quizzer.get_popup_exam("ABC123", 100, "995951762")
+        assert captured["questionIds"] == "995951762"
 
     def test_returns_popup_question(self, mock_session: ZhsSession) -> None:
         """获取弹窗题目详情"""

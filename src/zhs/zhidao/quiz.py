@@ -50,10 +50,11 @@ class ZhidaoQuizzer:
         lesson_id: int = 0,
         lesson_video_id: int = 0,
     ) -> PopupQuestion:
-        """获取弹窗题目详情"""
-        # question_ids 可能是字符串（逗号分隔），转为列表
-        if isinstance(question_ids, str):
-            question_ids = [int(x) for x in question_ids.split(",") if x.strip()]
+        """获取弹窗题目详情
+
+        question_ids 原样发送（真实接口返回的是逗号分隔字符串）；
+        转成 list 会让服务端返回 code=-1。
+        """
         url = f"{self._session.urls.study}/gateway/t/v1/popupAnswer/lessonPopupExam"
         data = {
             "lessonId": lesson_id,
