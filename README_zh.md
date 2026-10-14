@@ -1,6 +1,6 @@
 # ZHS — 智慧树自动刷课工具
 
-[![Python](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.13%20%7C%203.14-blue.svg)](https://www.python.org/)
 [![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://docs.astral.sh/ruff/)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
@@ -26,7 +26,7 @@ ZHS 是一个针对智慧树平台的自动学习工具，支持知到共享课�
 
 | 类别 | 选型                         |
 |------|----------------------------|
-| 语言 | Python 3.13+               |
+| 语言 | Python 3.13 / 3.14         |
 | HTTP 客户端 | httpx（同步）（api限制）           |
 | 数据模型 | pydantic v2                |
 | CLI 框架 | typer                      |
@@ -46,7 +46,7 @@ ZHS 是一个针对智慧树平台的自动学习工具，支持知到共享课�
 
 ### 前置要求
 
-- Python 3.13+
+- Python 3.13 或 3.14（暂不支持 3.15+：依赖的预编译轮子尚未齐备）
 - **最快开始**，使用`pip install zhs`,最推荐**用户**使用
 - 或者使用[uv](https://docs.astral.sh/uv/) 包管理器（开发推荐）
   - 注意使用`uv`要使用`uv run zhs`command 或者直接进入环境使用
