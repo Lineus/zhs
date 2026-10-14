@@ -13,11 +13,13 @@ jobs:
   # ── Pre-release Checks ─────────────────────────────────────────
   check:
     name: Pre-release Checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # 固定镜像，避免 ubuntu-latest 迁移（2026-10-19 起为 Ubuntu 26）带来环境漂移
     steps:
       - uses: actions/checkout@v4
 
       - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.13"  # 与 requires-python 区间和 CI 保持一致
 
       - name: Install dependencies
         run: uv sync --dev
@@ -37,7 +39,7 @@ jobs:
   # ── Build & Publish ────────────────────────────────────────────
   build:
     name: Build & Publish
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  
     needs: check
     environment: pypi  # 需在 GitHub 仓库 Settings > Environments 中创建 pypi 环境
     permissions:
@@ -49,6 +51,8 @@ jobs:
           fetch-depth: 0  # git-cliff 需要完整历史
 
       - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.13"  
 
       - name: Generate changelog (full, for CHANGELOG.md)
         uses: orhun/git-cliff-action@v4

@@ -14,11 +14,13 @@ jobs:
   # ── Lint, Format & Type Check ─────────────────────────────────
   check:
     name: Lint & Type Check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # 固定镜像，避免 ubuntu-latest 迁移（2026-10-19 起为 Ubuntu 26）带来环境漂移
     steps:
       - uses: actions/checkout@v4
 
       - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.13"  # 最低支持版本，与 ruff/mypy 的 target py313 对齐
 
       - name: Install dependencies
         run: uv sync --dev
@@ -34,12 +36,20 @@ jobs:
 
   # ── Tests & Coverage ──────────────────────────────────────────
   test:
-    name: Tests & Coverage
-    runs-on: ubuntu-latest
+    name: Tests & Coverage (py${{ matrix.python-version }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # 与 pyproject.toml 的 requires-python 区间保持一致
+        python-version: ["3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
 
+
       - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
         run: uv sync --dev
@@ -51,6 +61,31 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-report
+          name: coverage-report-py${{ matrix.python-version }}
           path: htmlcov/
           retention-days: 7
+
+  # ── PyPI 用户路径 ─────────────────────────────────────────────
+  # 模拟真实用户：把打好的 wheel 装进干净环境，依赖从 PyPI 全新解析
+  user-install:
+    name: Install From PyPI (py3.14)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # 取允许区间的上界：新版 Python / 新版依赖缺预编译轮子会最先在这里暴露
+      - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.14"
+
+      - name: Build wheel
+        run: uv build
+
+      # 等价于用户的 `pip install zhs`：干净 venv + 全新解析，不读 uv.lock
+      - name: Install the wheel with fresh resolution
+        run: |
+          uv venv /tmp/zhs-user
+          uv pip install --python /tmp/zhs-user/bin/python dist/*.whl
+
+      - name: Smoke test the CLI
+        run: /tmp/zhs-user/bin/zhs --version
