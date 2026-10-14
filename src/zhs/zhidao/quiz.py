@@ -26,8 +26,6 @@ class ZhidaoQuizzer:
                 correct_ids,
             )
         else:
-            # 答案由回包 questionOptions[].result 标记，选不出来说明字段没取对，
-            # 这种情况下提交上去的答案必然是错的，必须留痕
             logger.warning(
                 "answer_question: no option marked correct: questionId={} options={}",
                 question.question_id,
