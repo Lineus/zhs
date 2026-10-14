@@ -1,6 +1,6 @@
 # ZHS — Zhihuishu Auto-Learning Tool
 
-[![Python](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.13%20%7C%203.14-blue.svg)](https://www.python.org/)
 [![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://docs.astral.sh/ruff/)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
@@ -28,7 +28,7 @@ ZHS is an auto-learning tool for the Zhihuishu platform, supporting three types 
 
 | Category | Technology |
 |----------|------------|
-| Language | Python 3.13+ |
+| Language | Python 3.13 / 3.14 |
 | HTTP Client | httpx (synchronous) (API limitation) |
 | Data Models | pydantic v2 |
 | CLI Framework | typer |
@@ -48,7 +48,7 @@ ZHS is an auto-learning tool for the Zhihuishu platform, supporting three types 
 
 ### Prerequisites
 
-- Python 3.13+
+- Python 3.13 or 3.14 (3.15+ is not supported yet — the binary wheels of its dependencies are not available)
 - **Quickest start**: install with `pip install zhs` — most recommended for **users**
 - Or use the [uv](https://docs.astral.sh/uv/) package manager (recommended for development)
   - Note: When using `uv`, run with `uv run zhs` command or enter the environment directly
