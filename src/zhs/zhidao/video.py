@@ -131,6 +131,14 @@ class ZhidaoVideoPlayer:
         # 过滤已答题目
         questions = [q for q in questions if q.time_sec > played_time]
         questions.sort(key=lambda q: q.time_sec, reverse=True)
+        # 题点是否被过滤掉，是区分"本视频没有弹窗"和"题点在已播时间内"的唯一线索
+        logger.debug(
+            "popup queue: videoId={} played={:.1f}s pending={} timeSec={}",
+            video_id,
+            played_time,
+            len(questions),
+            [q.time_sec for q in questions],
+        )
 
         # 计算结束时间
         end_time = max(video.video_sec * self.end_threshold, 1.0)
@@ -238,6 +246,14 @@ class ZhidaoVideoPlayer:
             # 检查弹窗题目
             if questions and played_time >= questions[-1].time_sec:
                 q_point = questions.pop()
+                logger.debug(
+                    "popup triggered: videoId={} timeSec={} played={:.1f}s questionIds={} pending={}",
+                    video_id,
+                    q_point.time_sec,
+                    played_time,
+                    q_point.question_ids,
+                    len(questions),
+                )
                 try:
                     quizzer = ZhidaoQuizzer(self._session)
                     popup = quizzer.get_popup_exam(
@@ -250,8 +266,17 @@ class ZhidaoVideoPlayer:
                     answer_delay = 2
                     report = True
                     current_question = popup
+                    logger.debug(
+                        "popup question loaded: questionId={} options={}",
+                        popup.question_id,
+                        len(popup.question_options),
+                    )
                 except Exception as exc:
-                    logger.error(f"Failed to get question detail: {exc}")
+                    logger.error(
+                        "Failed to get question detail: questionIds={} err={}",
+                        q_point.question_ids,
+                        exc,
+                    )
 
             # 答题延迟
             if answer_delay is not None:
@@ -297,7 +322,12 @@ class ZhidaoVideoPlayer:
 
             # 显示进度条（始终相对于真实结束时间，不受时间限制影响）
             bar_current, bar_total = (60 - pause, 60.0) if pause else (played_time, real_end_time)
-            action = "pause" if pause else f"playing {video.video_id}" if answer_delay is None else "answering"
+            if answer_delay is not None:
+                action = "answering"
+            elif pause:
+                action = "pause"
+            else:
+                action = f"playing {video.video_id}"
             bar_str = progress_bar(bar_current, bar_total)
             line = f"{action} {bar_str}"
             self._progress_line = line

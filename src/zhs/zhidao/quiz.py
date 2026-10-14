@@ -19,6 +19,20 @@ class ZhidaoQuizzer:
     def answer_question(self, question: PopupQuestion) -> str:
         """自动选择正确答案（result == '1' 的选项 ID，逗号分隔）"""
         correct_ids = [str(opt.id) for opt in question.question_options if opt.result == "1"]
+        if correct_ids:
+            logger.debug(
+                "answer_question: questionId={} correct={}",
+                question.question_id,
+                correct_ids,
+            )
+        else:
+            # 答案由回包 questionOptions[].result 标记，选不出来说明字段没取对，
+            # 这种情况下提交上去的答案必然是错的，必须留痕
+            logger.warning(
+                "answer_question: no option marked correct: questionId={} options={}",
+                question.question_id,
+                [(o.id, o.result) for o in question.question_options],
+            )
         return ",".join(correct_ids)
 
     def load_video_pointer_info(
@@ -40,7 +54,14 @@ class ZhidaoQuizzer:
         }
         result = self._session.zhidao_query(url, data)
         points_data = result.get("data", {}).get("questionPoint") or []
-        return [QuestionPoint.model_validate(p) for p in points_data]
+        points = [QuestionPoint.model_validate(p) for p in points_data]
+        logger.debug(
+            "loadVideoPointerInfo: lessonVideoId={} -> {} point(s) {}",
+            lesson_video_id,
+            len(points),
+            [(p.time_sec, p.question_ids) for p in points],
+        )
+        return points
 
     def get_popup_exam(
         self,
@@ -50,10 +71,11 @@ class ZhidaoQuizzer:
         lesson_id: int = 0,
         lesson_video_id: int = 0,
     ) -> PopupQuestion:
-        """获取弹窗题目详情"""
-        # question_ids 可能是字符串（逗号分隔），转为列表
-        if isinstance(question_ids, str):
-            question_ids = [int(x) for x in question_ids.split(",") if x.strip()]
+        """获取弹窗题目详情
+
+        question_ids 原样发送（真实接口返回的是逗号分隔字符串）；
+        转成 list 会让服务端返回 code=-1。
+        """
         url = f"{self._session.urls.study}/gateway/t/v1/popupAnswer/lessonPopupExam"
         data = {
             "lessonId": lesson_id,
@@ -62,7 +84,9 @@ class ZhidaoQuizzer:
         }
         result = self._session.zhidao_query(url, data)
         dtos = result.get("data", {}).get("lessonTestQuestionUseInterfaceDtos", [])
+        logger.debug("lessonPopupExam: questionIds={} -> {} question(s)", question_ids, len(dtos))
         if not dtos:
+            logger.warning("lessonPopupExam returned no question: questionIds={}", question_ids)
             return PopupQuestion(question_id=0, question_options=[])
         q_data = dtos[0].get("testQuestion", {})
         options_data = q_data.get("questionOptions", [])
