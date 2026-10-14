@@ -416,3 +416,30 @@ API 参考：`.temp/questions_bank.md`
 - `README.md` / `README_zh.md`：简介下方各加一行提示——中文「如果我的项目对你有帮助，欢迎 star ⭐」、英文对应翻译
 - Test: 仅文档与包元数据改动；`tomllib` 解析确认 `[project.urls]` 生效，`uv run` 运行后 `uv.lock` 未被改动
 - Refactor: ruff check/format + mypy 通过（无源码改动）；CI 全量测试通过；分支 `docs/project-links-and-star`
+
+### Task 37 — 停机原因写入日志文件（可观测性补全）✅
+- 背景（issue #17）：`需要验证码，停止课程`、`学习时间已达上限，停止课程`、`视频失败` 三条此前只走 `tree_print` 打 stdout，**不写日志文件**。后果：用重定向、后台或自动化方式运行时（即不带 `--console-log`），事后无法从日志判断课程是被风控停的——`grep` 统计风控事件恒为 0，而 stdout 容易被当临时文件清掉
+- Green
+  - `src/zhs/zhidao/video.py`：`play_course` 三个 `except` 分支补日志——`CaptchaRequired` / `TimeLimitExceeded` → `logger.warning`（带 `racId`、`course`、`videoId`），其他异常 → `logger.error`（带视频名、`racId`、`videoId`）；课程正常结束补 `logger.info("play_course done: ...")`
+  - `src/zhs/hike/video.py`：`play_course` 补 `CaptchaRequired` / `TimeLimitExceeded` → warning（带 `courseId`）、正常结束 info；`_traverse` 的节点失败补 error
+  - `src/zhs/__main__.py`、`src/zhs/cli/services/play_service.py`：未知课程类型补 `logger.warning`（此前只 print）
+- 实测（2026-10-14）：撞到 `-12` 时日志文件确实写入 `Course stopped: captcha required (racId=..., course=..., videoId=...)`，与 stdout 解耦（详见 Task 38）
+- 已知缺口（本次未做）：`session.zhidao_query` 与 `api/encrypted_query._check_result` 抛 `CaptchaRequired` 时不写日志，且消息硬编码为 `服务端要求验证码`、服务端原始 message 丢失。因此不经 `play_course` 的调用（例如探针脚本）触发的 `-12` **完全不留痕**——补 `play_course` 三处尚不覆盖所有路径
+- Refactor: ruff check/format 通过；分支 `feat/captcha-observability`
+
+### Task 38 — 验证码（code -12）真机实测：触发点与判定粒度 ✅
+- 目的：为 issue #17 第 2 问（判定粒度、是否过期）补实测数据，此前只有逆向推断
+- 工具（`scripts/`）
+  - `probe_captcha.py`：对指定视频发 **delta=0 的常规心跳预检**（与 `zhs play` 开播预检同一代码路径），不虚报进度、不推进学习时长；支持 `--video` 指定、`--scan N` 批量扫未看视频、`--interval/--times` 时域重复探测
+  - `check_captcha_log.py`：离线断言日志链路（mock 造 `-12` 后回读日志）+ `--log` 扫描真实日志列事件时间线
+- 触发记录（19:28:19）
+  - 课程：形势与政策（`racId=4e5f515c4c5c4859454a5859584d58465e`），`videoId=95178013`《"十五五"规划《建议》与二十大报告的结构逻辑比较》911s
+  - 位置：**新视频开播的零增量预检心跳**，日志序列为 `DEBUG Report progress: ... played_time=0.0, last_submit=0.0, delta=0.0` → `WARNING Course stopped: captcha required (...)`
+  - 耗时：`zhs play` 约 18:58 启动 → 19:28 触发，**约 30 分钟**（与社区实测的 25 分钟 ~ 3.5 小时区间一致）
+- 粒度实测（被拦后 2~3 分钟内探针复现，状态持续、非瞬时）
+  - 5 个**未看**视频：全部 `-12`
+  - 2 个**已看完**视频：全部 `-12`
+  - 7/7 全部被拦 → **非视频级**；结合 issue #17 提供的"同一 session 下另一门课零增量心跳返回 `code=0`"，也**非账号级** → 判定粒度为**课程级**（该账号在该课程上的所有心跳统一被拦）
+- 修正：`delta=0.0` **不是预检专属**——主循环在随机暂停、弹窗答题后会以 `last_submit == played_time` 再次上报，同样打 `delta=0.0`。区分预检应结合紧邻的 `play_video: videoId=..., played=...s` 行（预检是新视频刚开播，紧跟该行）
+- 未测：自然恢复耗时（`-12` 持续多久自动解除）——本次只验证了"被拦后 3 分钟内未恢复"
+- Refactor: ruff check/format 通过；分支 `feat/captcha-observability` + `docs/captcha-recovery`

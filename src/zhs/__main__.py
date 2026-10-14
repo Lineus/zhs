@@ -233,6 +233,7 @@ def play(
                 elif resolved.type == "ai":
                     _run_ai_by_str(session, config, c)
                 else:
+                    logger.warning(f"未知的课程类型: {resolved.type}，跳过课程 {c}")
                     print(f"未知的课程类型: {resolved.type}，跳过课程 {c}")
             except Exception as e:
                 logger.error(f"课程 {c} 处理失败: {e}")

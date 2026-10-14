@@ -36,13 +36,21 @@ class HikeVideoPlayer:
     def play_course(self, course_id: str, root: list[ResourceNode]) -> None:
         """播放整个 Hike 课程"""
         begin_time = time.time()
+        logger.info(f"hike play_course: {course_id}, roots={len(root)}")
         tree_print(f"{course_tag('hike')} 课程: {course_id} ({len(root)} 个根章节)", enabled=True)
         try:
             for chapter in root:
                 self._traverse(course_id, chapter)
+        except CaptchaRequired:
+            logger.warning(f"Course stopped: captcha required (courseId={course_id})")
+            raise
+        except TimeLimitExceeded:
+            logger.warning(f"Course stopped: study time limit reached (courseId={course_id})")
+            raise
         except KeyboardInterrupt:
             tree_print(msg_warn("!! 用户中断"), enabled=True)
         cost = time.time() - begin_time
+        logger.info(f"hike play_course done: {course_id} ({cost:.1f}s)")
         tree_print(msg_done(f"完成课程: {course_id} ({cost:.1f}s)"), depth=1, enabled=True)
 
     def _traverse(self, course_id: str, node: ResourceNode, depth: int = 0) -> None:
@@ -90,6 +98,7 @@ class HikeVideoPlayer:
         except CaptchaRequired:
             raise
         except Exception as exc:
+            logger.error(f"Node failed: {node.name} (courseId={course_id}) - {exc}")
             tree_print(msg_error(f"!! 处理失败: {node.name} - {exc}"), depth=depth, enabled=tv)
 
     def play_video(self, course_id: str, file_id: int, prev_time: int = 0) -> None:

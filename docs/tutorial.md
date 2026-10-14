@@ -608,3 +608,13 @@ cat ~/.zhs/execution.json
 ```
 
 知到 / Hike 课程 ID 均为纯数字（如 `1000008156` / `12345`），AI 课程需要 `courseId` 和 `classId` 两个参数（`-c courseId:classId`）。知到视频页 URL 中的 `recruitAndCourseId`（形如 `ABC123`）只能通过 `--url` 传入。
+
+### Q11: 遇到"需要验证码，停止课程"怎么办？
+
+这是服务端风控触发的滑块验证码（API 返回 `code: -12`），**不是登录失效**。程序按设计停下、交给人工处理，不会自动过验证码。
+
+处理步骤：
+
+1. 打开智慧树网页版（`studyvideoh5.zhihuishu.com`）或 APP，进入**被拦的那门课程**，按提示完成滑块验证；
+2. 回到命令行**直接重新运行 `zhs play`**——沿用原来的 Cookie 即可，**不需要 `zhs login` 重新扫码**；
+
