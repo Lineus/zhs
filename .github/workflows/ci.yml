@@ -65,6 +65,22 @@ jobs:
           path: htmlcov/
           retention-days: 7
 
+  # ── 聚合门禁 ──────────────────────────────────────────────────
+  # 分支规则集只能引用固定名称的必需检查，而 matrix 展开后名字会带版本后缀
+  # （Tests & Coverage (py3.13) / (py3.14)）。此 job 名称固定、汇总 matrix 结果，
+  # 以后增删 python-version 都无需改 ruleset。
+  tests-gate:
+    name: Tests & Coverage
+    needs: [test]
+    if: always()  # test 失败时也要运行，否则该检查会被判成 skipped 而不是 failed
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify test matrix succeeded
+        if: needs.test.result != 'success'
+        run: |
+          echo "::error::test matrix 结果：${{ needs.test.result }}"
+          exit 1
+
   # ── PyPI 用户路径 ─────────────────────────────────────────────
   # 模拟真实用户：把打好的 wheel 装进干净环境，依赖从 PyPI 全新解析
   user-install:
