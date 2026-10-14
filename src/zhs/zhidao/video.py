@@ -84,21 +84,42 @@ class ZhidaoVideoPlayer:
                         self.play_video(rac_id, video.video_id, ctx)
                     except CaptchaRequired:
                         self._clear_progress()
+                        logger.warning(
+                            "Course stopped: captcha required (racId={}, course={}, videoId={})",
+                            rac_id,
+                            course_name,
+                            video.video_id,
+                        )
                         tree_print(msg_warn("!! 需要验证码，停止课程"), depth=3, enabled=tv)
                         return
                     except TimeLimitExceeded:
                         self._clear_progress()
+                        logger.warning(
+                            "Course stopped: study time limit reached (racId={}, course={}, videoId={})",
+                            rac_id,
+                            course_name,
+                            video.video_id,
+                        )
                         tree_print(msg_warn("!! 学习时间已达上限，停止课程"), depth=3, enabled=tv)
                         return
                     except KeyboardInterrupt:
                         raise
                     except Exception as exc:
                         self._clear_progress()
+                        logger.error(
+                            "Video failed: {} (racId={}, videoId={}) - {}",
+                            video.name,
+                            rac_id,
+                            video.video_id,
+                            exc,
+                        )
                         tree_print(msg_error(f"!! 视频失败: {video.name} - {exc}"), depth=3, enabled=tv)
                         continue
 
         cost = time.time() - begin_time
         self._clear_progress()
+
+        logger.info("play_course done: {} ({:.1f}s)", course_name, cost)
         tree_print(msg_done(f"完成课程: {course_name} ({cost:.1f}s)"), depth=1, enabled=tv)
 
     def play_video(self, rac_id: str, video_id: int, ctx: "ZhidaoContext") -> None:
@@ -131,7 +152,7 @@ class ZhidaoVideoPlayer:
         # 过滤已答题目
         questions = [q for q in questions if q.time_sec > played_time]
         questions.sort(key=lambda q: q.time_sec, reverse=True)
-        # 题点是否被过滤掉，是区分"本视频没有弹窗"和"题点在已播时间内"的唯一线索
+
         logger.debug(
             "popup queue: videoId={} played={:.1f}s pending={} timeSec={}",
             video_id,
