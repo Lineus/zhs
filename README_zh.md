@@ -155,6 +155,8 @@ zhs homework
 ```
 
 > AI 课程 `learnPage` URL 含 `nodeUid`（知识点 ID）时走**直接模式**，只做该知识点作业；`knowledgeStudy` URL 走**扫描模式**全刷。
+>
+> AI 课程作业答题过程中按 `p` 可跳过当前作业（不提交），直接开始下一个作业。
 
 ### 6. AI 课程考试
 
@@ -209,6 +211,8 @@ max_submit = 0           # 最大重做次数（0 = 无限）
 delay_min = 1.0          # 每题保存后最小延迟（秒）
 delay_max = 2.0          # 每题保存后最大延迟（秒）
 ai_homework_threshold = 90  # AI 作业跳过阈值
+ai_homework_max_attempts = 10  # AI 作业最大尝试次数（0 = 不限）
+ai_homework_max_stall = 3   # 连续无提升多少次后停止（0 = 关闭）
 
 [exam]
 save_nums = 5            # 每批保存答案的题目数
@@ -231,7 +235,8 @@ use_builtin_ai = true    # 仅 AI 智慧课程：true=智慧树内置 AI
 api_key = ""             # OpenAI 兼容 API Key（AI 智慧课程在 use_builtin_ai=false 时使用；知到作业/考试必填）
 base_url = "https://api.openai.com/v1"
 model = "gpt-4o-mini"
-max_token = 27900
+max_token = 1000000
+# extra_headers = { "x-opencode-session" = "zhs-my-session" }  # 部分服务需要自定义请求头
 
 [crypto]                 # 加密密钥（一般无需修改）
 [urls]                   # API URL（一般无需修改）

@@ -10,6 +10,7 @@ from typing import Any
 from loguru import logger
 from openai import OpenAI
 
+from zhs import __version__
 from zhs.exceptions import ZhsError
 from zhs.llm.base import LLMProvider
 
@@ -35,8 +36,20 @@ class OpenAIProvider(LLMProvider):
         retry_delay: float = 1.0,
         max_token: int = 27900,
         timeout: float = 120.0,
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
-        self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+        # 默认用 zhs 自己的 User-Agent，部分服务（如 OpenCode Go）要求客户端自我标识，
+        # 而不是伪装成通用 SDK；extra_headers 可覆盖默认值或补充服务端要求的请求头。
+        headers = {"User-Agent": f"zhs/{__version__}"}
+        if extra_headers:
+            headers.update(extra_headers)
+        self._extra_headers = headers
+        self._client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            default_headers=headers,
+        )
         self._model_name = model_name
         self._extra = extra or {}
         self._max_retries = max_retries

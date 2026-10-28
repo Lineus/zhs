@@ -311,6 +311,249 @@ class TestRunHomeworkOnly:
         with patch.object(manager, "query_homework", return_value=exam):
             manager._run_homework_only(100, 200, knowledge, theme, course_info, AIConfig(api_key="k"), homework_config)
 
+    def test_stops_after_consecutive_no_improvement(self, manager: AiCourseManager) -> None:
+        """分数连续无提升达到上限后停止重试（避免 30~阈值区间无限循环）"""
+        knowledge = KnowledgePoint(knowledge_id=1, knowledge_name="测试", study_progress=0)
+        theme = Theme(theme_name="主题1")
+        course_info = AiCourseInfo(course_name="课程1")
+        homework_config = HomeworkConfig(
+            ai_homework_threshold=90,
+            ai_homework_max_stall=3,
+            ai_homework_max_attempts=100,
+        )
+        stuck = ExamInfo(exam_test_id=1, paper_id=2, mastery_score=80)
+
+        mock_ctx = MagicMock()
+        mock_ctx.skipped = False
+        mock_ctx.used_reference = False
+        mock_ctx.start.return_value = (False, 5, 6)
+        with (
+            patch.object(manager, "query_homework", return_value=stuck),
+            patch.object(manager, "_collect_completed_ppts"),
+            patch("zhs.ai.homework.HomeworkCtx", return_value=mock_ctx),
+            patch("zhs.ai.course.time.sleep"),
+        ):
+            manager._run_homework_only(100, 200, knowledge, theme, course_info, AIConfig(api_key="k"), homework_config)
+
+        # 首次 + 连续 3 次无提升 = 3 次实际作答（停滞计数在作答后判定）
+        assert mock_ctx.start.call_count == 3
+
+    def test_passes_reference_fetcher_to_homework_ctx(self, manager: AiCourseManager) -> None:
+        """标准答案查询函数传给 HomeworkCtx，按题目 ID 查询"""
+        knowledge = KnowledgePoint(knowledge_id=1, knowledge_name="测试", study_progress=0)
+        theme = Theme(theme_name="主题1")
+        course_info = AiCourseInfo(course_name="课程1")
+        homework_config = HomeworkConfig(ai_homework_threshold=90)
+        stuck = ExamInfo(exam_test_id=1, paper_id=2, mastery_score=50)
+
+        mock_ctx = MagicMock()
+        mock_ctx.skipped = True
+        mock_ctx.start.return_value = (False, 0, 1)
+        with (
+            patch.object(manager, "query_homework", return_value=stuck),
+            patch.object(manager, "_collect_completed_ppts"),
+            patch.object(manager, "_next_reference_candidate", return_value="标准答案") as mock_result,
+            patch("zhs.ai.homework.HomeworkCtx", return_value=mock_ctx) as mock_cls,
+            patch("zhs.ai.course.SkipInput") as mock_skip_cls,
+            patch("zhs.ai.course.time.sleep"),
+        ):
+            mock_skip_cls.return_value.enabled = False
+            manager._run_homework_only(100, 200, knowledge, theme, course_info, AIConfig(api_key="k"), homework_config)
+
+            fetcher = mock_cls.call_args.kwargs["reference_fetcher"]
+            assert fetcher(1010786456) == "标准答案"
+            mock_result.assert_called_once_with(100, 200, 1, 1, 1010786456)
+
+            with patch.object(manager, "get_question_option_contents", return_value=["选项A"]) as mock_options:
+                options_fetcher = mock_cls.call_args.kwargs["reference_options_fetcher"]
+                assert options_fetcher(2) == ["选项A"]
+                mock_options.assert_called_once_with(100, 200, 1, 1, 2)
+
+    def test_stops_after_user_skips(self, manager: AiCourseManager) -> None:
+        """用户按 p 跳过后不再重试，直接进入下一个作业"""
+        knowledge = KnowledgePoint(knowledge_id=1, knowledge_name="测试", study_progress=0)
+        theme = Theme(theme_name="主题1")
+        course_info = AiCourseInfo(course_name="课程1")
+        homework_config = HomeworkConfig(ai_homework_threshold=90, ai_homework_max_attempts=10)
+        stuck = ExamInfo(exam_test_id=1, paper_id=2, mastery_score=50)
+
+        mock_ctx = MagicMock()
+        mock_ctx.skipped = True
+        mock_ctx.start.return_value = (False, 0, 6)
+        with (
+            patch.object(manager, "query_homework", return_value=stuck),
+            patch.object(manager, "_collect_completed_ppts"),
+            patch("zhs.ai.homework.HomeworkCtx", return_value=mock_ctx),
+            patch("zhs.ai.course.SkipInput") as mock_skip_cls,
+            patch("zhs.ai.course.time.sleep"),
+        ):
+            mock_skip_cls.return_value.enabled = False
+            manager._run_homework_only(100, 200, knowledge, theme, course_info, AIConfig(api_key="k"), homework_config)
+
+        assert mock_ctx.start.call_count == 1
+        mock_skip_cls.return_value.start.assert_called_once()
+        mock_skip_cls.return_value.stop.assert_called_once()
+
+    def test_stops_at_max_attempts(self, manager: AiCourseManager) -> None:
+        """即使分数持续小幅提升，也受最大尝试次数约束"""
+        knowledge = KnowledgePoint(knowledge_id=1, knowledge_name="测试", study_progress=0)
+        theme = Theme(theme_name="主题1")
+        course_info = AiCourseInfo(course_name="课程1")
+        homework_config = HomeworkConfig(
+            ai_homework_threshold=100,
+            ai_homework_max_stall=0,
+            ai_homework_max_attempts=3,
+        )
+        scores = [0, 10, 20, 30, 40, 50]
+        exams = [ExamInfo(exam_test_id=1, paper_id=2, mastery_score=s) for s in scores]
+
+        mock_ctx = MagicMock()
+        mock_ctx.skipped = False
+        mock_ctx.used_reference = False
+        mock_ctx.start.return_value = (False, 5, 6)
+        with (
+            patch.object(manager, "query_homework", side_effect=exams),
+            patch.object(manager, "_collect_completed_ppts"),
+            patch("zhs.ai.homework.HomeworkCtx", return_value=mock_ctx),
+            patch("zhs.ai.course.time.sleep"),
+        ):
+            manager._run_homework_only(100, 200, knowledge, theme, course_info, AIConfig(api_key="k"), homework_config)
+
+        assert mock_ctx.start.call_count == 3
+
+
+class TestGetQuestionAnswerCandidates:
+    """get_question_answer_candidates / 候选轮换"""
+
+    def test_builds_candidates_from_latex_result(self, manager: AiCourseManager) -> None:
+        """含 $$ 的填空题按 LaTeX 变体生成候选，单 $ 优先"""
+        payload = {
+            "code": 200,
+            "data": {
+                "questionList": [
+                    {
+                        "id": "1010786456",
+                        "result": "相对运动速度 $$\\vec{v}_r$$",
+                        "optionVos": [
+                            {
+                                "content": '<div>相对运动速度 <img src="https://x/a.png"></div>',
+                                "isCorrect": 1,
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+        with patch.object(manager, "_ai_query", return_value=payload) as mock_query:
+            candidates = manager.get_question_answer_candidates(100, 200, 300, 400, 1010786456)
+
+        assert candidates[0] == "相对运动速度 $\\vec{v}_r$"
+        assert "相对运动速度 \\vec{v}_r" in candidates
+        assert "相对运动速度 v_r" in candidates
+        assert "相对运动速度 $$\\vec{v}_r$$" in candidates
+        assert "相对运动速度" in candidates
+        assert "https://x/a.png" in candidates
+        assert "mastery-statistics/get-test-question" in mock_query.call_args.args[0]
+        assert mock_query.call_args.args[1]["questionId"] == 1010786456
+
+    def test_svg_content_prioritized(self, manager: AiCourseManager) -> None:
+        """题库 MathJax SVG 内容优先（实测该形式能通过自动批阅）"""
+        svg = (
+            '<div><span class="math-block "><mjx-container><svg data-svg-latex="x"></svg></mjx-container></span></div>'
+        )
+        payload = {
+            "code": 200,
+            "data": {
+                "questionList": [
+                    {
+                        "id": 1010786456,
+                        "result": "相对运动速度 $$\\vec{v}_r$$",
+                        "optionVos": [{"content": svg, "isCorrect": 1}],
+                    }
+                ]
+            },
+        }
+        with patch.object(manager, "_ai_query", return_value=payload):
+            candidates = manager.get_question_answer_candidates(100, 200, 300, 400, 1010786456)
+        assert candidates[0] == svg
+        assert "相对运动速度 $\\vec{v}_r$" in candidates
+
+    def test_plain_result_first(self, manager: AiCourseManager) -> None:
+        """纯文本答案不需要变体，result 直接排第一"""
+        payload = {"code": 200, "data": {"questionList": [{"id": 456, "result": "力偶", "optionVos": []}]}}
+        with patch.object(manager, "_ai_query", return_value=payload):
+            candidates = manager.get_question_answer_candidates(100, 200, 300, 400, 456)
+        assert candidates[0] == "力偶"
+
+    def test_other_question_returns_empty(self, manager: AiCourseManager) -> None:
+        """返回的不是请求的题目时没有候选"""
+        payload = {"code": 200, "data": {"questionList": [{"id": 456, "result": "别的答案"}]}}
+        with patch.object(manager, "_ai_query", return_value=payload):
+            assert manager.get_question_answer_candidates(100, 200, 300, 400, 1010786456) == []
+
+    def test_api_error_returns_empty(self, manager: AiCourseManager) -> None:
+        """接口异常时返回空列表，不影响作业流程"""
+        with patch.object(manager, "_ai_query", side_effect=Exception("network")):
+            assert manager.get_question_answer_candidates(100, 200, 300, 400, 1010786456) == []
+
+    def test_malformed_response_returns_empty(self, manager: AiCourseManager) -> None:
+        """响应结构异常时返回空列表"""
+        with patch.object(manager, "_ai_query", return_value=MagicMock()):
+            assert manager.get_question_answer_candidates(100, 200, 300, 400, 1010786456) == []
+        with patch.object(manager, "_ai_query", return_value={"data": None}):
+            assert manager.get_question_answer_candidates(100, 200, 300, 400, 1010786456) == []
+
+    def test_rotates_candidates(self, manager: AiCourseManager) -> None:
+        """每次重试返回下一个候选，用完后返回 None"""
+        with patch.object(manager, "get_question_answer_candidates", return_value=["候选1", "候选2"]):
+            assert manager._next_reference_candidate(100, 200, 300, 400, 1) == "候选1"
+            assert manager._next_reference_candidate(100, 200, 300, 400, 1) == "候选2"
+            assert manager._next_reference_candidate(100, 200, 300, 400, 1) is None
+
+
+class TestGetQuestionOptionContents:
+    """get_question_option_contents"""
+
+    def test_returns_correct_option_contents(self, manager: AiCourseManager) -> None:
+        """返回 isCorrect=1 的选项内容"""
+        payload = {
+            "code": 200,
+            "data": {
+                "questionList": [
+                    {
+                        "id": 930916063,
+                        "optionVos": [
+                            {"content": "<p>A</p>", "isCorrect": 1},
+                            {"content": "<p>B</p>", "isCorrect": 0},
+                            {"content": "<p>C</p>", "isCorrect": 1},
+                        ],
+                    }
+                ]
+            },
+        }
+        with patch.object(manager, "_ai_query", return_value=payload) as mock_query:
+            contents = manager.get_question_option_contents(100, 200, 300, 400, 930916063)
+
+        assert contents == ["<p>A</p>", "<p>C</p>"]
+        assert mock_query.call_args.args[1]["questionId"] == 930916063
+
+        # 同一题第二次直接命中内存缓存
+        manager.get_question_option_contents(100, 200, 300, 400, 930916063)
+        assert mock_query.call_count == 1
+
+    def test_other_question_returns_empty(self, manager: AiCourseManager) -> None:
+        payload = {"code": 200, "data": {"questionList": [{"id": 1, "optionVos": [{"content": "A", "isCorrect": 1}]}]}}
+        with patch.object(manager, "_ai_query", return_value=payload):
+            assert manager.get_question_option_contents(100, 200, 300, 400, 930916063) == []
+
+    def test_api_error_returns_empty(self, manager: AiCourseManager) -> None:
+        with patch.object(manager, "_ai_query", side_effect=Exception("network")):
+            assert manager.get_question_option_contents(100, 200, 300, 400, 930916063) == []
+
+    def test_malformed_response_returns_empty(self, manager: AiCourseManager) -> None:
+        with patch.object(manager, "_ai_query", return_value=MagicMock()):
+            assert manager.get_question_option_contents(100, 200, 300, 400, 930916063) == []
+
 
 class TestRunCourse:
     """run_course"""

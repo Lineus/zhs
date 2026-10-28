@@ -68,3 +68,15 @@ class TestLLMProviderFactoryCreate:
         provider = LLMProviderFactory.create(config)
         assert isinstance(provider, OpenAIProvider)
         assert provider._model_name == "deepseek-chat"
+
+    def test_openai_provider_receives_extra_headers(self) -> None:
+        """OpenAIProvider 接收 extra_headers"""
+        config = AIConfig(
+            enabled=True,
+            use_builtin_ai=False,
+            api_key="sk-abc",
+            extra_headers={"x-opencode-session": "sess-1"},
+        )
+        provider = LLMProviderFactory.create(config)
+        assert isinstance(provider, OpenAIProvider)
+        assert provider._extra_headers["x-opencode-session"] == "sess-1"

@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from zhs.ai.exam_base import AiExamBase
-from zhs.ai.models import OptionVo, QuestionContent, QuestionSheet
+from zhs.ai.models import OptionVo, QuestionContent, QuestionSheet, UserAnswerVo
 from zhs.config import AIConfig
 
 
@@ -172,6 +172,16 @@ class TestGetCachedAnswer:
         assert exam_base._get_cached_answer(123, "题目文本") == ["99"]
         mock_cache.search_in_course.assert_called_once_with(100, "题目文本")
 
+    def test_empty_answer_falls_through_to_cross_exam(self, exam_base: AiExamBase) -> None:
+        """缓存的答案为空（被判错后失效）时视为未命中，继续跨 exam 查找"""
+        mock_cache = MagicMock()
+        mock_cache.get.return_value = {"answer": ""}
+        mock_cache.search_in_course.return_value = {"answer": "99"}
+        exam_base._cache = mock_cache
+        exam_base._answer_cache = {"123": {"answer": ""}}
+
+        assert exam_base._get_cached_answer(123, "题目文本") == ["99"]
+
     def test_cache_miss(self, exam_base: AiExamBase) -> None:
         """三级全部未命中返回 None"""
         mock_cache = MagicMock()
@@ -200,6 +210,104 @@ class TestGetCachedAnswer:
         exam_base._get_cached_answer(123)
         # 第二次应从内存命中，get 只调用一次
         assert mock_cache.get.call_count == 1
+
+
+class TestOptionIdRemap:
+    """重做作业时选项 ID 变化，缓存按选项内容映射"""
+
+    @staticmethod
+    def _entry(old_options: list[tuple[int, str]], correct_ids: list[int]) -> dict[str, Any]:
+        return {
+            "answer": "#@#".join(str(i) for i in correct_ids),
+            "answer_content": "",
+            "questionDict": {
+                "question_type": 1,
+                "option_vos": [
+                    {"id": oid, "content": content, "is_correct": 1 if oid in correct_ids else 0}
+                    for oid, content in old_options
+                ],
+            },
+        }
+
+    def test_single_choice_remaps_by_text(self, exam_base: AiExamBase) -> None:
+        """单选题旧 ID 100 → 新 ID 201（选项顺序变化）"""
+        exam_base._answer_cache = {"1": self._entry([(100, "<p>选项A</p>"), (101, "<p>选项B</p>")], [100])}
+        question = QuestionContent(
+            id=1,
+            content="Q",
+            question_type=1,
+            option_vos=[
+                OptionVo(id=200, content="<p>选项B</p>"),
+                OptionVo(id=201, content="<p>选项A</p>"),
+            ],
+        )
+        answers, source = exam_base._get_answer(question)
+        assert answers == ["201"]
+        assert source == "cached"
+
+    def test_judge_remaps_by_text(self, exam_base: AiExamBase) -> None:
+        """判断题 对/错 按内容映射"""
+        exam_base._answer_cache = {"1": self._entry([(100, "对"), (101, "错")], [101])}
+        question = QuestionContent(
+            id=1,
+            content="判断题",
+            question_type=14,
+            option_vos=[OptionVo(id=200, content="错"), OptionVo(id=201, content="对")],
+        )
+        answers, source = exam_base._get_answer(question)
+        assert answers == ["200"]
+        assert source == "cached"
+
+    def test_multiple_choice_remaps_each_option(self, exam_base: AiExamBase) -> None:
+        """多选题每个正确选项分别按内容映射"""
+        exam_base._answer_cache = {
+            "1": self._entry(
+                [(100, "<p>甲</p>"), (101, "<p>乙</p>"), (102, "<p>丙</p>")],
+                [100, 102],
+            )
+        }
+        question = QuestionContent(
+            id=1,
+            content="多选",
+            question_type=2,
+            option_vos=[
+                OptionVo(id=200, content="<p>丙</p>"),
+                OptionVo(id=201, content="<p>乙</p>"),
+                OptionVo(id=202, content="<p>甲</p>"),
+            ],
+        )
+        answers, source = exam_base._get_answer(question)
+        assert answers == ["202", "200"]
+        assert source == "cached"
+
+    def test_image_option_remaps_by_img_src(self, exam_base: AiExamBase) -> None:
+        """图片选项按 <img src> 映射（base64 内容稳定）"""
+        img = '<p><img src="data:image/png;base64,AAAA"></p>'
+        exam_base._answer_cache = {"1": self._entry([(100, img), (101, "<p>B</p>")], [100])}
+        question = QuestionContent(
+            id=1,
+            content="Q",
+            question_type=1,
+            option_vos=[OptionVo(id=200, content="<p>B</p>"), OptionVo(id=201, content=img)],
+        )
+        answers, source = exam_base._get_answer(question)
+        assert answers == ["201"]
+        assert source == "cached"
+
+    def test_unmappable_choice_is_cache_miss(self, exam_base: AiExamBase) -> None:
+        """选项内容完全对不上时视为未命中，不再提交旧 ID"""
+        exam_base._answer_cache = {"1": self._entry([(100, "<p>已删除的选项</p>")], [100])}
+        exam_base._provider = None
+        question = QuestionContent(
+            id=1,
+            content="Q",
+            question_type=1,
+            option_vos=[OptionVo(id=200, content="<p>A</p>"), OptionVo(id=201, content="<p>B</p>")],
+        )
+        with patch("zhs.ai.exam_base.random.choice", return_value={"id": 201}):
+            answers, source = exam_base._get_answer(question)
+        assert source == "random"
+        assert answers == ["201"]
 
 
 class TestSetCachedAnswer:
@@ -297,6 +405,34 @@ class TestGetAnswerStrategy:
 
     def test_cache_hit_returns_cached(self, exam_base: AiExamBase) -> None:
         """缓存命中返回缓存答案"""
+        exam_base._answer_cache = {"1": {"answer": "10"}}
+        question = QuestionContent(
+            id=1,
+            content="test",
+            question_type=1,
+            option_vos=[OptionVo(id=10, content="A"), OptionVo(id=11, content="B")],
+        )
+        answers, source = exam_base._get_answer(question)
+        assert answers == ["10"]
+        assert source == "cached"
+
+    def test_reference_answer_used_before_cache(self, exam_base: AiExamBase) -> None:
+        """平台标准答案优先于缓存（填空答案可能含 LaTeX 公式）"""
+        exam_base._reference_answers = {1: "相对运动速度 $$\\vec{v}_r$$"}
+        exam_base._answer_cache = {"1": {"answer": "相对运动速度"}}
+        question = QuestionContent(
+            id=1,
+            content="填空___",
+            question_type=3,
+            option_vos=[OptionVo(id=10, content="相对运动速度", is_correct=1)],
+        )
+        answers, source = exam_base._get_answer(question)
+        assert answers == ["相对运动速度 $$\\vec{v}_r$$"]
+        assert source == "reference"
+
+    def test_reference_answer_ignored_for_choice(self, exam_base: AiExamBase) -> None:
+        """选择题不使用填空题标准答案（格式不同）"""
+        exam_base._reference_answers = {1: "A"}
         exam_base._answer_cache = {"1": {"answer": "10"}}
         question = QuestionContent(
             id=1,
@@ -554,6 +690,137 @@ class TestCheckResults:
         ):
             exam_base._check_results(sheets)
         assert exam_base._answer_cache["1"]["answer"] == "答案1/答案2"
+
+    def test_check_results_invalidates_rejected_cached_answer(self, exam_base: AiExamBase) -> None:
+        """缓存答案被平台判错且参考答案相同 → 清空缓存答案，下一轮改走 AI"""
+        question = QuestionContent(
+            id=1,
+            content="填空：相对运动速度",
+            question_type=3,
+            option_vos=[OptionVo(id=10, content="相对运动速度", is_correct=1)],
+            user_answer_vos=[UserAnswerVo(is_correct=0, answer="相对运动速度")],
+        )
+        exam_base._answer_cache = {"1": {"answer": "相对运动速度"}}
+
+        with (
+            patch.object(exam_base, "_get_question_content", return_value=question),
+            patch.object(exam_base, "_save_cache"),
+        ):
+            # 模拟本轮从缓存取答案
+            answers, source = exam_base._get_answer(question)
+            assert answers == ["相对运动速度"]
+            assert source == "cached"
+
+            exam_base._check_results([QuestionSheet(question_id=1, version=1)])
+
+        assert exam_base._answer_cache["1"]["answer"] == ""
+
+    def test_check_results_replaces_stale_cached_answer(self, exam_base: AiExamBase) -> None:
+        """缓存答案与参考答案不同（如选项 ID 失效）→ 用参考答案覆盖缓存"""
+        question = QuestionContent(
+            id=1,
+            content="Q1",
+            question_type=1,
+            option_vos=[OptionVo(id=10, content="A", is_correct=1)],
+            user_answer_vos=[UserAnswerVo(is_correct=0, answer="99")],
+        )
+        exam_base._answer_cache = {"1": {"answer": "99"}}
+
+        with (
+            patch.object(exam_base, "_get_question_content", return_value=question),
+            patch.object(exam_base, "_save_cache"),
+        ):
+            answers, source = exam_base._get_answer(question)
+            assert answers == ["99"]
+            assert source == "cached"
+
+            exam_base._check_results([QuestionSheet(question_id=1, version=1)])
+
+        assert exam_base._answer_cache["1"]["answer"] == "10"
+
+    def test_check_results_keeps_cache_when_answer_not_recorded(self, exam_base: AiExamBase) -> None:
+        """用户答案为空的（保存失败）不清空缓存，避免误伤有效缓存"""
+        question = QuestionContent(
+            id=1,
+            content="填空：答案",
+            question_type=3,
+            option_vos=[OptionVo(id=10, content="答案", is_correct=1)],
+            user_answer_vos=[],
+        )
+        exam_base._answer_cache = {"1": {"answer": "答案"}}
+
+        with (
+            patch.object(exam_base, "_get_question_content", return_value=question),
+            patch.object(exam_base, "_save_cache"),
+        ):
+            exam_base._get_answer(question)
+            exam_base._check_results([QuestionSheet(question_id=1, version=1)])
+
+        assert exam_base._answer_cache["1"]["answer"] == "答案"
+
+    def test_check_results_caches_submitted_answer_when_correct(self, exam_base: AiExamBase) -> None:
+        """答对时缓存实际提交的答案，不用渲染 HTML 覆盖（避免下次答错）"""
+        submitted = "相对运动速度 $$\\vec{v}_r$$"
+        rendered = '<div>相对运动速度 <img src="https://x/a.png"></div>'
+        question = QuestionContent(
+            id=1,
+            content="填空",
+            question_type=3,
+            option_vos=[OptionVo(id=10, content=rendered, is_correct=1)],
+            user_answer_vos=[UserAnswerVo(is_correct=1, answer=submitted)],
+        )
+        exam_base._submitted_answer_str[1] = submitted
+
+        with (
+            patch.object(exam_base, "_get_question_content", return_value=question),
+            patch.object(exam_base, "_save_cache"),
+        ):
+            exam_base._check_results([QuestionSheet(question_id=1, version=1)])
+
+        assert exam_base._answer_cache["1"]["answer"] == submitted
+
+    def test_check_results_fill_blank_with_image_keeps_html(self, exam_base: AiExamBase) -> None:
+        """填空题参考答案含图片时，提交原始 HTML（绕过只能输入文本的输入框）"""
+        html = '<div>相对运动速度 <span class="math-block "><img src="https://x/a.png"></span></div>'
+        question = QuestionContent(
+            id=1,
+            content="填空",
+            question_type=3,
+            option_vos=[OptionVo(id=10, content=html, is_correct=1)],
+            user_answer_vos=[UserAnswerVo(is_correct=0, answer="相对运动速度")],
+        )
+        with (
+            patch.object(exam_base, "_get_question_content", return_value=question),
+            patch.object(exam_base, "_save_cache"),
+        ):
+            exam_base._check_results([QuestionSheet(question_id=1, version=1)])
+
+        entry = exam_base._answer_cache["1"]
+        # answer 保留原始 HTML（含图片 URL），answer_content 仍是展示用纯文本
+        assert entry["answer"] == html
+        assert entry["answer_content"] == "相对运动速度"
+
+    def test_check_results_fill_blank_multiple_image_answers(self, exam_base: AiExamBase) -> None:
+        """多个空都含图片时用 #@# 分隔，与官方客观填空格式一致"""
+        first = '<div><img src="https://x/a.png"></div>'
+        second = '<div><img src="https://x/b.png"></div>'
+        question = QuestionContent(
+            id=1,
+            content="填空",
+            question_type=3,
+            option_vos=[
+                OptionVo(id=10, content=first, is_correct=1),
+                OptionVo(id=11, content=second, is_correct=1),
+            ],
+            user_answer_vos=[UserAnswerVo(is_correct=0, answer="")],
+        )
+        with (
+            patch.object(exam_base, "_get_question_content", return_value=question),
+            patch.object(exam_base, "_save_cache"),
+        ):
+            exam_base._check_results([QuestionSheet(question_id=1, version=1)])
+
+        assert exam_base._answer_cache["1"]["answer"] == f"{first}#@#{second}"
 
     def test_check_results_strips_html_in_cache(self, exam_base: AiExamBase) -> None:
         """缓存中的 question / answer_content 用 extract_text 清洗 HTML"""

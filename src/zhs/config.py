@@ -47,6 +47,10 @@ class HomeworkConfig(BaseModel):
     delay_max: float = Field(default=2.0, alias="homework_delay_max", description="每题保存后最大休息时间（秒）")
     page_size: int = Field(default=100, alias="homework_page_size", description="扫描作业列表分页大小")
     ai_homework_threshold: int = Field(default=90, description="AI 课程作业跳过阈值（masteryScore > 此值则跳过）")
+    ai_homework_max_attempts: int = Field(
+        default=10, description="AI 课程作业最大尝试次数（0 = 不限，仍受停滞检测约束）"
+    )
+    ai_homework_max_stall: int = Field(default=3, description="AI 课程作业连续无提升多少次后停止（0 = 关闭停滞检测）")
 
 
 class DisplayConfig(BaseModel):
@@ -125,6 +129,10 @@ class AIConfig(BaseModel):
     base_url: str = Field(default="https://api.openai.com/v1", description="API Base URL")
     model: str = Field(default="gpt-4o-mini", description="模型名称")
     max_token: int = Field(default=27900, description="最大 Token 数")
+    extra_headers: dict[str, str] = Field(
+        default_factory=dict,
+        description="自定义请求头（部分服务需要，如 OpenCode Go 的 x-opencode-session）",
+    )
 
 
 class ExamConfig(BaseModel):
@@ -293,6 +301,10 @@ class ConfigManager:
                 hw_kwargs["page_size"] = hw["page_size"]
             if "ai_homework_threshold" in hw:
                 hw_kwargs["ai_homework_threshold"] = hw["ai_homework_threshold"]
+            if "ai_homework_max_attempts" in hw:
+                hw_kwargs["ai_homework_max_attempts"] = hw["ai_homework_max_attempts"]
+            if "ai_homework_max_stall" in hw:
+                hw_kwargs["ai_homework_max_stall"] = hw["ai_homework_max_stall"]
             # 兼容旧版字段名（homework_delay_min 等）
             if "homework_delay_min" in hw:
                 hw_kwargs["delay_min"] = hw["homework_delay_min"]

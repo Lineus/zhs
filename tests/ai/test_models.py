@@ -166,6 +166,22 @@ class TestResourceDetail:
         assert rd.resources_url == "https://example.com/video.mp4"
         assert rd.resources_file_id == 200
 
+    def test_null_url_and_empty_file_id(self) -> None:
+        """API 返回 resourcesUrl=null / resourcesFileId='' 时使用默认值"""
+        data = {
+            "resourcesUid": 100,
+            "resourcesName": "文本资源",
+            "resourcesType": 2,
+            "resourcesDistributeType": 1,
+            "resourcesUrl": None,
+            "resourcesFileId": "",
+            "resourcesSyncType": None,
+        }
+        rd = ResourceDetail.model_validate(data)
+        assert rd.resources_url == ""
+        assert rd.resources_file_id == 0
+        assert rd.resources_sync_type == 1
+
 
 class TestResource:
     """资源模型"""
@@ -218,6 +234,12 @@ class TestExamInfo:
         info = ExamInfo.model_validate(data)
         assert info.exam_test_id == 10
         assert info.mastery_score == 95
+
+    def test_null_mastery_score(self) -> None:
+        """未作答时 highMasteryScore=null 应回退为 0"""
+        data = {"examTestId": 10, "paperId": 20, "highMasteryScore": None}
+        info = ExamInfo.model_validate(data)
+        assert info.mastery_score == 0
 
 
 class TestQuestionSheet:

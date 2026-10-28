@@ -110,11 +110,25 @@ class LoginManager:
                     once_password = msg.get("oncePassword", "")
                     logger.info("One-time code received")
                     # 用 oncePassword 完成登录（gologin 返回 HTML，不解析 JSON）
+                    # 必须跟随 302：CAS 的最终登录态（CASLOGC 等）在跳转链中下发，
+                    # 不跟随会导致“扫码成功但后续命令提示未登录”。
                     client = self._session._get_client()
-                    client.get(f"{login_page}?service={gologin_url}", params={"pwd": once_password})
+                    login_resp = client.get(
+                        login_page,
+                        params={"service": gologin_url, "pwd": once_password},
+                        follow_redirects=True,
+                    )
                     self._session.cookies = client.cookies
+                    logger.debug(
+                        f"Login response: status={login_resp.status_code}, url={login_resp.url}, "
+                        f"cookies={sorted(client.cookies.keys())}"
+                    )
+
                     if not self._session.cookies:
                         raise LoginFailed("登录后未获取到 cookies")
+                    if not self._session.uuid:
+                        logger.error(f"登录后未获取到 CASLOGC，当前 cookies: {sorted(client.cookies.keys())}")
+                        raise LoginFailed("扫码已确认，但登录态未建立（缺少 CASLOGC），请重试")
 
                     logger.info("Login successful")
                     return LoginResult(

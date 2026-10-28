@@ -317,6 +317,215 @@ class TestFinish:
             result = homework_ctx._finish(submit=True, sheets=sheets)
         assert result == (False, 0, 1)
 
+    def test_finish_does_not_submit_when_skipped(self, homework_ctx: HomeworkCtx) -> None:
+        """用户跳过时不提交、不检查结果"""
+        homework_ctx._skipped = True
+        sheets = [QuestionSheet(question_id=1, version=1)]
+        with (
+            patch.object(homework_ctx, "_submit") as mock_submit,
+            patch.object(homework_ctx, "_check_results") as mock_check,
+        ):
+            result = homework_ctx._finish(submit=True, sheets=sheets)
+        assert result == (False, 0, 1)
+        mock_submit.assert_not_called()
+        mock_check.assert_not_called()
+
+
+class TestUsedReference:
+    """used_reference 属性"""
+
+    def test_true_when_reference_used(self, homework_ctx: HomeworkCtx) -> None:
+        homework_ctx._progress_sources = ["cached", "reference"]
+        assert homework_ctx.used_reference is True
+
+    def test_false_without_reference(self, homework_ctx: HomeworkCtx) -> None:
+        homework_ctx._progress_sources = ["cached", "AI generated"]
+        assert homework_ctx.used_reference is False
+
+
+class TestReferenceAnswer:
+    """平台标准答案（reference_fetcher）"""
+
+    def test_fetcher_used_for_fill_blank(self, mock_session: MagicMock, ai_config: AIConfig) -> None:
+        """填空题优先使用平台标准答案，且同一题只查询一次"""
+        fetcher = MagicMock(return_value="相对运动速度 $$\\vec{v}_r$$")
+        ctx = HomeworkCtx(
+            session=mock_session,
+            course_id=100,
+            knowledge_id=200,
+            exam_test_id=300,
+            exam_paper_id=400,
+            ai_config=ai_config,
+            reference_fetcher=fetcher,
+        )
+        question = QuestionContent(
+            id=1010786456,
+            content="填空___",
+            question_type=3,
+            option_vos=[OptionVo(id=10, content="相对运动速度")],
+        )
+
+        answers, source = ctx._get_answer(question)
+        assert answers == ["相对运动速度 $$\\vec{v}_r$$"]
+        assert source == "reference"
+
+        # 第二次直接从 _reference_answers 命中，不再请求接口
+        ctx._get_answer(question)
+        fetcher.assert_called_once_with(1010786456)
+
+    def test_fetcher_not_used_for_choice(self, mock_session: MagicMock, ai_config: AIConfig) -> None:
+        """选择题不查询填空题标准答案接口"""
+        fetcher = MagicMock(return_value="A")
+        ctx = HomeworkCtx(
+            session=mock_session,
+            course_id=100,
+            knowledge_id=200,
+            exam_test_id=300,
+            exam_paper_id=400,
+            ai_config=ai_config,
+            reference_fetcher=fetcher,
+        )
+        ctx._answer_cache = {"1": {"answer": "10"}}
+        question = QuestionContent(
+            id=1,
+            content="选择题",
+            question_type=1,
+            option_vos=[OptionVo(id=10, content="A"), OptionVo(id=11, content="B")],
+        )
+
+        answers, source = ctx._get_answer(question)
+        assert answers == ["10"]
+        assert source == "cached"
+        fetcher.assert_not_called()
+
+    def test_fetcher_error_falls_back(self, mock_session: MagicMock, ai_config: AIConfig) -> None:
+        """查询标准答案失败时不影响正常答题流程"""
+        fetcher = MagicMock(side_effect=Exception("network"))
+        ctx = HomeworkCtx(
+            session=mock_session,
+            course_id=100,
+            knowledge_id=200,
+            exam_test_id=300,
+            exam_paper_id=400,
+            ai_config=ai_config,
+            reference_fetcher=fetcher,
+        )
+        ctx._provider = None
+        question = QuestionContent(
+            id=1,
+            content="填空___",
+            question_type=3,
+            option_vos=[],
+        )
+
+        answers, source = ctx._get_answer(question)
+        assert answers == ["未知"]
+        assert source == "random"
+
+
+class TestReferenceOptions:
+    """选择题/判断题平台标准选项"""
+
+    def test_multiple_choice_maps_by_content(self, mock_session: MagicMock, ai_config: AIConfig) -> None:
+        """题库正确选项内容 → 当前试卷选项 ID"""
+        fetcher = MagicMock(return_value=["<p>选项A</p>", "<p>选项C</p>"])
+        ctx = HomeworkCtx(
+            session=mock_session,
+            course_id=100,
+            knowledge_id=200,
+            exam_test_id=300,
+            exam_paper_id=400,
+            ai_config=ai_config,
+            reference_options_fetcher=fetcher,
+        )
+        question = QuestionContent(
+            id=1,
+            content="多选",
+            question_type=2,
+            option_vos=[
+                OptionVo(id=200, content="<p>选项C</p>"),
+                OptionVo(id=201, content="<p>选项B</p>"),
+                OptionVo(id=202, content="<p>选项A</p>"),
+            ],
+        )
+
+        answers, source = ctx._get_answer(question)
+        assert answers == ["202", "200"]
+        assert source == "reference"
+
+        # 同一题只查一次
+        ctx._get_answer(question)
+        fetcher.assert_called_once_with(1)
+
+    def test_image_option_maps_by_img_src(self, mock_session: MagicMock, ai_config: AIConfig) -> None:
+        """图片选项按 <img src> 映射"""
+        img = '<p><img src="https://x/a.png"></p>'
+        fetcher = MagicMock(return_value=[img])
+        ctx = HomeworkCtx(
+            session=mock_session,
+            course_id=100,
+            knowledge_id=200,
+            exam_test_id=300,
+            exam_paper_id=400,
+            ai_config=ai_config,
+            reference_options_fetcher=fetcher,
+        )
+        question = QuestionContent(
+            id=1,
+            content="单选",
+            question_type=1,
+            option_vos=[OptionVo(id=200, content="<p>B</p>"), OptionVo(id=201, content=img)],
+        )
+        answers, source = ctx._get_answer(question)
+        assert answers == ["201"]
+        assert source == "reference"
+
+    def test_unmappable_content_falls_back_to_cache(self, mock_session: MagicMock, ai_config: AIConfig) -> None:
+        """题库选项内容对不上当前试卷时回退缓存"""
+        fetcher = MagicMock(return_value=["<p>题库里的选项</p>"])
+        ctx = HomeworkCtx(
+            session=mock_session,
+            course_id=100,
+            knowledge_id=200,
+            exam_test_id=300,
+            exam_paper_id=400,
+            ai_config=ai_config,
+            reference_options_fetcher=fetcher,
+        )
+        ctx._answer_cache = {"1": {"answer": "10"}}
+        question = QuestionContent(
+            id=1,
+            content="单选",
+            question_type=1,
+            option_vos=[OptionVo(id=10, content="<p>A</p>"), OptionVo(id=11, content="<p>B</p>")],
+        )
+        answers, source = ctx._get_answer(question)
+        assert answers == ["10"]
+        assert source == "cached"
+
+    def test_fetcher_error_falls_back_to_cache(self, mock_session: MagicMock, ai_config: AIConfig) -> None:
+        """接口异常时回退缓存，不影响答题"""
+        fetcher = MagicMock(side_effect=Exception("network"))
+        ctx = HomeworkCtx(
+            session=mock_session,
+            course_id=100,
+            knowledge_id=200,
+            exam_test_id=300,
+            exam_paper_id=400,
+            ai_config=ai_config,
+            reference_options_fetcher=fetcher,
+        )
+        ctx._answer_cache = {"1": {"answer": "10"}}
+        question = QuestionContent(
+            id=1,
+            content="单选",
+            question_type=1,
+            option_vos=[OptionVo(id=10, content="A"), OptionVo(id=11, content="B")],
+        )
+        answers, source = ctx._get_answer(question)
+        assert answers == ["10"]
+        assert source == "cached"
+
 
 class TestAnswerQuestions:
     """_answer_questions"""
@@ -340,6 +549,42 @@ class TestAnswerQuestions:
         with patch.object(homework_ctx, "_process_question") as mock_process:
             homework_ctx._answer_questions([])
         mock_process.assert_not_called()
+
+    def test_stops_immediately_when_skip_requested(self, homework_ctx: HomeworkCtx) -> None:
+        """按 p 后不再处理任何题目"""
+        homework_ctx._skip_input = MagicMock()
+        homework_ctx._skip_input.consume.return_value = True
+        sheets = [QuestionSheet(question_id=1, version=1), QuestionSheet(question_id=2, version=1)]
+        with patch.object(homework_ctx, "_process_question") as mock_process:
+            homework_ctx._answer_questions(sheets)
+        mock_process.assert_not_called()
+        assert homework_ctx.skipped is True
+
+    def test_stops_after_current_question(self, homework_ctx: HomeworkCtx) -> None:
+        """第一题作答后按 p，剩余题目不再处理"""
+        homework_ctx._skip_input = MagicMock()
+        homework_ctx._skip_input.consume.side_effect = [False, True]
+        sheets = [
+            QuestionSheet(question_id=1, version=1),
+            QuestionSheet(question_id=2, version=1),
+            QuestionSheet(question_id=3, version=1),
+        ]
+        with patch.object(homework_ctx, "_process_question") as mock_process:
+            homework_ctx._answer_questions(sheets)
+        assert mock_process.call_count == 1
+        assert homework_ctx.skipped is True
+
+    def test_skip_during_delay_avoids_question_fetch(self, homework_ctx: HomeworkCtx) -> None:
+        """延迟期间按 p，不再获取下一题"""
+        homework_ctx._skip_input = MagicMock()
+        homework_ctx._skip_input.consume.return_value = True
+        with (
+            patch.object(homework_ctx, "_get_question_content") as mock_get,
+            patch("zhs.ai.homework.time.sleep"),
+        ):
+            homework_ctx._process_question(QuestionSheet(question_id=1, version=1))
+        mock_get.assert_not_called()
+        assert homework_ctx.skipped is True
 
 
 class TestProcessQuestionErrorHandling:

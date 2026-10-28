@@ -91,6 +91,42 @@ class TestListKnowledgeResources:
             assert len(result) == 1
             assert result[0].resources_detail.resources_name == "课件1"
 
+    def test_skips_invalid_resource_and_keeps_valid(self, manager: AiCourseManager) -> None:
+        """单个资源解析失败时跳过该资源，保留同知识点的其他资源"""
+        mock_data = {
+            "data": {
+                "resourceList": [
+                    {
+                        "studyStatus": 0,
+                        "resourcesDetail": {
+                            "resourcesUid": 1,
+                            "resourcesName": "正常资源",
+                            "resourcesType": 2,
+                            "resourcesDistributeType": 1,
+                        },
+                    },
+                    {
+                        "studyStatus": 0,
+                        "resourcesDetail": {
+                            "resourcesUid": 2,
+                            "resourcesName": "缺字段资源",
+                            "resourcesType": 1,
+                            # 缺少 resourcesDistributeType，解析失败
+                        },
+                    },
+                ]
+            }
+        }
+        with patch.object(manager, "_ai_query", return_value=mock_data):
+            result = manager.list_knowledge_resources(100, 200, 1)
+            assert len(result) == 1
+            assert result[0].resources_detail.resources_name == "正常资源"
+
+    def test_null_data_returns_empty_list(self, manager: AiCourseManager) -> None:
+        """data 为 null 时返回空列表而不是抛异常"""
+        with patch.object(manager, "_ai_query", return_value={"data": None}):
+            assert manager.list_knowledge_resources(100, 200, 1) == []
+
 
 class TestCompleteResource:
     """完成资源"""

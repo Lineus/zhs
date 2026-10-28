@@ -65,6 +65,24 @@ class ResourceDetail(BaseModel):
     resources_file_id: int = Field(default=0, alias="resourcesFileId")
     resources_sync_type: int = Field(default=1, alias="resourcesSyncType")
 
+    @field_validator("resources_url", mode="before")
+    @classmethod
+    def _none_url_to_empty(cls, v: object) -> object:
+        """API 对文本/视频资源可能返回 resourcesUrl=null"""
+        return "" if v is None else v
+
+    @field_validator("resources_file_id", mode="before")
+    @classmethod
+    def _empty_file_id_to_zero(cls, v: object) -> object:
+        """非视频资源的 resourcesFileId 可能返回空串"""
+        return 0 if v is None or v == "" else v
+
+    @field_validator("resources_sync_type", mode="before")
+    @classmethod
+    def _none_sync_type_to_default(cls, v: object) -> object:
+        """resourcesSyncType 缺失/为 null 时按必学资源处理"""
+        return 1 if v is None or v == "" else v
+
 
 class Resource(BaseModel):
     """资源"""
@@ -84,6 +102,12 @@ class ExamInfo(BaseModel):
     exam_test_id: int = Field(alias="examTestId")
     paper_id: int = Field(alias="paperId")
     mastery_score: int = Field(default=0, alias="highMasteryScore")
+
+    @field_validator("mastery_score", mode="before")
+    @classmethod
+    def _none_score_to_zero(cls, v: object) -> object:
+        """未作答时 API 返回 highMasteryScore=null"""
+        return 0 if v is None else v
 
 
 class QuestionSheet(BaseModel):

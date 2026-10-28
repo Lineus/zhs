@@ -1,10 +1,12 @@
 """AI 课程管理"""
 
+import re
 import time
 from random import randint
 from typing import Any
 
 from loguru import logger
+from pydantic import ValidationError
 
 from zhs.ai.models import AiCourseInfo, ExamInfo, KnowledgePoint, Resource
 from zhs.ai.video import AiVideoPlayer
@@ -19,9 +21,12 @@ from zhs.utils.display import (
     msg_error,
     msg_info,
     msg_skip,
+    msg_warn,
     progress_bar,
     styled,
 )
+from zhs.utils.html import extract_text
+from zhs.utils.skip_input import SkipInput
 
 
 class AiCourseManager:
@@ -33,6 +38,11 @@ class AiCourseManager:
     def __init__(self, session: ZhsSession, reporter: ProgressReporter | None = None) -> None:
         self._session = session
         self._reporter = reporter or ConsoleReporter()
+        # 填空题标准答案候选（question_id -> 候选列表）与当前尝试下标
+        self._answer_candidates: dict[int, list[str]] = {}
+        self._candidate_index: dict[int, int] = {}
+        # 选择题标准选项内容（question_id -> 正确选项 content）
+        self._option_contents_cache: dict[int, list[str]] = {}
 
     def _ai_query(self, url: str, data: dict[str, Any], content_type: str = "json") -> dict[str, Any]:
         """AI 课程 API 查询（使用 ai_key，默认 JSON）"""
@@ -87,8 +97,16 @@ class AiCourseManager:
         url = f"{self._session.urls.ai}/run/gateway/t/stu/resources/list-knowledge-resource"
         data = {"courseId": course_id, "classId": class_id, "knowledgeId": knowledge_id}
         result = self._ai_query(url, data)
-        raw_list = result["data"].get("resourceList", [])
-        return [Resource.model_validate(r) for r in raw_list]
+        raw_list = (result.get("data") or {}).get("resourceList") or []
+        resources: list[Resource] = []
+        for raw in raw_list:
+            try:
+                resources.append(Resource.model_validate(raw))
+            except ValidationError as e:
+                # 单个资源字段异常时跳过，不影响同一知识点下的其他资源
+                name = (raw.get("resourcesDetail") or {}).get("resourcesName", "<未知>")
+                logger.warning(f"跳过无法解析的资源 {name}: {e}")
+        return resources
 
     def complete_resource(self, course_id: int, class_id: int, knowledge_id: int, resources_uid: int) -> None:
         """完成资源"""
@@ -117,6 +135,171 @@ class AiCourseManager:
         except Exception as e:
             logger.error(f"查询作业信息失败: {e}")
             return None
+
+    @staticmethod
+    def _build_answer_candidates(result: str, option_contents: list[str]) -> list[str]:
+        """根据题目 result / 选项内容生成填空题答案候选
+
+        平台 ``result`` 常见写法是 ``相对运动速度 $$\\vec{v}_r$$``；自动批阅
+        可能只认其中一种 LaTeX 形式（单 $、无 $、去掉 \\vec 等），因此按
+        可能性从高到低生成候选，逐次重试。
+        """
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        def add(value: str) -> None:
+            value = value.strip()
+            if value and value not in seen:
+                seen.add(value)
+                candidates.append(value)
+
+        # 题库源码里的 MathJax SVG 是实测能被自动批阅接受的形式，优先提交。
+        # 平台 result 里的 $$...$$ 和各种 LaTeX 变体反而会被判错。
+        svg_contents = [c for c in option_contents if "mjx-container" in c or "<svg" in c]
+        for content in svg_contents:
+            if len(content) <= 10000:
+                add(content)
+
+        if "$$" in result:
+            # 题库内部 MathJax 使用的是单 $ 行内公式
+            add(result.replace("$$", "$"))
+            add(result.replace("$$", ""))
+            simplified = re.sub(r"\\[a-zA-Z]+", "", result.replace("$$", ""))
+            simplified = simplified.replace("{", "").replace("}", "")
+            add(simplified)
+            add(result.replace("$$", "").replace(" ", ""))
+
+        add(result)
+
+        for content in option_contents:
+            if content in svg_contents:
+                add(extract_text(content))
+                continue
+            if len(content) <= 10000:
+                add(content)
+            add(extract_text(content))
+            for url in re.findall(r'<img[^>]+src="([^"]+)"', content):
+                add(url)
+
+        return candidates
+
+    def get_question_answer_candidates(
+        self,
+        course_id: int,
+        class_id: int,
+        exam_test_id: int | str,
+        knowledge_id: int | str,
+        question_id: int,
+    ) -> list[str]:
+        """获取单题的标准答案候选列表（按优先级排序）"""
+        url = f"{self._session.urls.ai}/run/gateway/t/stu/mastery-statistics/get-test-question"
+        data = {
+            "classId": class_id,
+            "courseId": course_id,
+            "examTestId": exam_test_id,
+            "knowledgeId": knowledge_id,
+            "questionId": question_id,
+        }
+        try:
+            result = self._ai_query(url, data)
+        except Exception as e:
+            logger.warning(f"查询题目标准答案失败: question_id={question_id}: {e}")
+            return []
+
+        if not isinstance(result, dict):
+            return []
+        payload = result.get("data")
+        if not isinstance(payload, dict):
+            return []
+        question_list = payload.get("questionList")
+        if not isinstance(question_list, list):
+            return []
+
+        for item in question_list:
+            if not isinstance(item, dict) or str(item.get("id")) != str(question_id):
+                continue
+            result_text = str(item.get("result") or "")
+            option_contents = [
+                str(opt["content"])
+                for opt in item.get("optionVos") or []
+                if isinstance(opt, dict) and opt.get("isCorrect") == 1 and opt.get("content")
+            ]
+            candidates = self._build_answer_candidates(result_text, option_contents)
+            if candidates:
+                logger.info(f"获取到题目标准答案候选: question_id={question_id}, 共 {len(candidates)} 个")
+            return candidates
+        return []
+
+    def get_question_option_contents(
+        self,
+        course_id: int,
+        class_id: int,
+        exam_test_id: int | str,
+        knowledge_id: int | str,
+        question_id: int,
+    ) -> list[str]:
+        """获取选择题/判断题的正确选项内容（题库 optionVos 中 isCorrect=1）
+
+        不返回选项 ID：每次重做作业时选项 ID 会变化，返回内容后由 HomeworkCtx
+        按内容映射到当前试卷的选项 ID。
+        """
+        if question_id in self._option_contents_cache:
+            return self._option_contents_cache[question_id]
+
+        url = f"{self._session.urls.ai}/run/gateway/t/stu/mastery-statistics/get-test-question"
+        data = {
+            "classId": class_id,
+            "courseId": course_id,
+            "examTestId": exam_test_id,
+            "knowledgeId": knowledge_id,
+            "questionId": question_id,
+        }
+        try:
+            result = self._ai_query(url, data)
+        except Exception as e:
+            logger.warning(f"查询题目标准选项失败: question_id={question_id}: {e}")
+            return []
+
+        contents: list[str] = []
+        if isinstance(result, dict):
+            payload = result.get("data")
+            question_list = payload.get("questionList") if isinstance(payload, dict) else None
+            if isinstance(question_list, list):
+                for item in question_list:
+                    if not isinstance(item, dict) or str(item.get("id")) != str(question_id):
+                        continue
+                    for opt in item.get("optionVos") or []:
+                        if isinstance(opt, dict) and opt.get("isCorrect") == 1 and opt.get("content"):
+                            contents.append(str(opt["content"]))
+                    break
+
+        if contents:
+            logger.info(f"获取到题目标准选项: question_id={question_id}, 共 {len(contents)} 个")
+            self._option_contents_cache[question_id] = contents
+        return contents
+
+    def _next_reference_candidate(
+        self,
+        course_id: int,
+        class_id: int,
+        exam_test_id: int | str,
+        knowledge_id: int | str,
+        question_id: int,
+    ) -> str | None:
+        """按顺序返回下一个标准答案候选（每次尝试用一个）"""
+        if question_id not in self._answer_candidates:
+            self._answer_candidates[question_id] = self.get_question_answer_candidates(
+                course_id, class_id, exam_test_id, knowledge_id, question_id
+            )
+
+        candidates = self._answer_candidates[question_id]
+        index = self._candidate_index.get(question_id, 0)
+        if index >= len(candidates):
+            return None
+
+        self._candidate_index[question_id] = index + 1
+        logger.info(f"尝试标准答案候选 {index + 1}/{len(candidates)}: question_id={question_id}")
+        return candidates[index]
 
     def _process_resource(
         self,
@@ -357,6 +540,7 @@ class AiCourseManager:
             self._reporter.print(f"    {msg_info(f'共 {len(resources)} 个资源')}")
         except Exception as e:
             logger.error(f"获取资源列表失败: {e}")
+            self._reporter.tree_print(msg_error(f"获取资源列表失败: {e}"), depth=3, enabled=True)
             return
 
         total = len(resources)
@@ -423,65 +607,130 @@ class AiCourseManager:
                 except Exception as e:
                     logger.error(f"PPT 转换失败: {e}")
 
-        # 作业循环
-        tried = 0
-        while True:
-            if tried > 0:
-                exam = self.query_homework(course_id, class_id, knowledge.knowledge_id)
+        # 答题过程中按 p 可跳过当前作业，直接处理下一个作业（下一个知识点）
+        skip_input = SkipInput()
+        skip_input.start()
+        if skip_input.enabled:
+            self._reporter.tree_print(msg_info("答题时按 p 可跳过当前作业"), depth=3, enabled=True)
 
-            if exam is None or not exam.paper_id:
-                self._reporter.tree_print(msg_skip("无作业"), depth=3, enabled=True)
-                break
+        try:
+            # 作业循环（exam 为 None 时已在上面的达标检查中返回）
+            assert exam is not None
+            exam_test_id = exam.exam_test_id
 
-            if not self._should_do_homework(exam, tried, False, homework_config):
+            def fetch_reference(question_id: int) -> str | None:
+                """按需返回单题的标准答案候选（含公式的填空题尤其需要）"""
+                return self._next_reference_candidate(
+                    course_id, class_id, exam_test_id, knowledge.knowledge_id, question_id
+                )
+
+            def fetch_reference_options(question_id: int) -> list[str]:
+                """按需返回选择题/判断题的正确选项内容"""
+                return self.get_question_option_contents(
+                    course_id, class_id, exam_test_id, knowledge.knowledge_id, question_id
+                )
+
+            tried = 0
+            best_score = exam.mastery_score
+            stagnant = 0
+            used_reference = False
+            while True:
+                if tried > 0:
+                    exam = self.query_homework(course_id, class_id, knowledge.knowledge_id)
+                    if exam is not None:
+                        exam_test_id = exam.exam_test_id
+
+                if exam is None or not exam.paper_id:
+                    self._reporter.tree_print(msg_skip("无作业"), depth=3, enabled=True)
+                    break
+
+                if tried > 0:
+                    if exam.mastery_score > best_score:
+                        best_score = exam.mastery_score
+                        stagnant = 0
+                    else:
+                        stagnant += 1
+
+                    # 分数停滞：分数卡在 30~阈值之间时，_should_do_homework 会一直返回 True，
+                    # 若缓存答案又被平台判错，会无限重试同一个结果，必须主动止损。
+                    max_stall = homework_config.ai_homework_max_stall
+                    if max_stall > 0 and stagnant >= max_stall:
+                        if used_reference:
+                            # 还在换用不同的标准答案写法，不算停滞
+                            logger.info("正在尝试不同的标准答案候选，继续重试")
+                            stagnant = 0
+                        else:
+                            msg = f"作业连续 {stagnant} 次无提升（当前={exam.mastery_score}分），停止重试"
+                            self._reporter.tree_print(msg_warn(msg), depth=3, enabled=True)
+                            logger.warning(msg)
+                            break
+
+                    max_attempts = homework_config.ai_homework_max_attempts
+                    if max_attempts > 0 and tried >= max_attempts:
+                        msg = f"作业已达最大尝试次数 {max_attempts}（当前={exam.mastery_score}分），停止重试"
+                        self._reporter.tree_print(msg_warn(msg), depth=3, enabled=True)
+                        logger.warning(msg)
+                        break
+
+                if not self._should_do_homework(exam, tried, False, homework_config):
+                    self._reporter.tree_print(
+                        msg_done(f"作业已达标: {exam.mastery_score}分 (阈值={homework_config.ai_homework_threshold})"),
+                        depth=3,
+                        enabled=True,
+                    )
+                    break
+
+                tried += 1
+                self._reporter.print()
+                self._reporter.print(styled("-" * 40, _C.DIM))
                 self._reporter.tree_print(
-                    msg_done(f"作业已达标: {exam.mastery_score}分 (阈值={homework_config.ai_homework_threshold})"),
+                    f"作业: {styled(f'第{tried}次尝试', _C.BRIGHT_MAGENTA)}, 当前={exam.mastery_score}分",
                     depth=3,
                     enabled=True,
                 )
-                break
 
-            tried += 1
-            self._reporter.print()
-            self._reporter.print(styled("-" * 40, _C.DIM))
-            self._reporter.tree_print(
-                f"作业: {styled(f'第{tried}次尝试', _C.BRIGHT_MAGENTA)}, 当前={exam.mastery_score}分",
-                depth=3,
-                enabled=True,
-            )
-
-            # 执行作业（使用缓存的 PPT 参考资料）
-            homework_ctx = HomeworkCtx(
-                session=self._session,
-                course_id=course_id,
-                knowledge_id=knowledge.knowledge_id,
-                exam_test_id=exam.exam_test_id,
-                exam_paper_id=exam.paper_id,
-                ai_config=ai_config,
-                op_extra={
-                    "courseName": course_info.course_name,
-                    "theme": theme.theme_name,
-                    "knowledgePoint": knowledge.knowledge_name,
-                },
-                question_bank=question_bank,
-            )
-
-            try:
-                is_success, correct, total = homework_ctx.start(reference_materials=reference_materials)
-                score_pct = (correct / total * 100) if total > 0 else 0
-                score_color = _C.GREEN if is_success else _C.YELLOW
-                self._reporter.tree_print(
-                    f"作业结果: {styled(f'{correct}/{total}', score_color)} "
-                    f"({styled(f'{score_pct:.0f}%', score_color)})",
-                    depth=4,
-                    enabled=True,
+                # 执行作业（使用缓存的 PPT 参考资料）
+                homework_ctx = HomeworkCtx(
+                    session=self._session,
+                    course_id=course_id,
+                    knowledge_id=knowledge.knowledge_id,
+                    exam_test_id=exam.exam_test_id,
+                    exam_paper_id=exam.paper_id,
+                    ai_config=ai_config,
+                    op_extra={
+                        "courseName": course_info.course_name,
+                        "theme": theme.theme_name if theme else "",
+                        "knowledgePoint": knowledge.knowledge_name,
+                    },
+                    question_bank=question_bank,
+                    skip_input=skip_input,
+                    reference_fetcher=fetch_reference,
+                    reference_options_fetcher=fetch_reference_options,
                 )
-                logger.info(f"作业结果: {correct}/{total} ({score_pct:.0f}%)")
-            except Exception as e:
-                self._reporter.tree_print(msg_error(f"作业失败: {e}"), depth=4, enabled=True)
-                logger.error(f"作业失败: {e}")
 
-            time.sleep(2)
+                try:
+                    is_success, correct, total = homework_ctx.start(reference_materials=reference_materials)
+                    used_reference = homework_ctx.used_reference
+                    if homework_ctx.skipped:
+                        self._reporter.tree_print(msg_warn("已跳过当前作业，继续下一个作业"), depth=4, enabled=True)
+                        logger.info("用户跳过当前作业，继续下一个作业")
+                        break
+                    score_pct = (correct / total * 100) if total > 0 else 0
+                    score_color = _C.GREEN if is_success else _C.YELLOW
+                    self._reporter.tree_print(
+                        f"作业结果: {styled(f'{correct}/{total}', score_color)} "
+                        f"({styled(f'{score_pct:.0f}%', score_color)})",
+                        depth=4,
+                        enabled=True,
+                    )
+                    logger.info(f"作业结果: {correct}/{total} ({score_pct:.0f}%)")
+                except Exception as e:
+                    self._reporter.tree_print(msg_error(f"作业失败: {e}"), depth=4, enabled=True)
+                    logger.error(f"作业失败: {e}")
+
+                time.sleep(2)
+        finally:
+            skip_input.stop()
 
         # 题库使用统计（仅当题库存在且有查询时显示）
         if question_bank is not None:

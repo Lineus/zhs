@@ -309,3 +309,74 @@ class TestCookieExpired:
         result = new_manager.try_restore_cookies(cookies_file)
         assert result is True
         assert new_session.uuid == "roundtrip-uuid"
+
+
+# ---------------------------------------------------------------------------
+# 6. 扫码确认后必须真正建立登录态（CASLOGC）
+# ---------------------------------------------------------------------------
+
+
+class TestLoginStateEstablished:
+    """扫码确认后校验登录态"""
+
+    def test_missing_caslogc_raises(self, login_manager: LoginManager, mock_http: Any) -> None:
+        """未拿到 CASLOGC 时不能报告登录成功（即使已有会话 cookie）"""
+        login_page_calls = 0
+
+        def login_page_side_effect(_request: object) -> httpx.Response:
+            nonlocal login_page_calls
+            login_page_calls += 1
+            if login_page_calls == 1:
+                return httpx.Response(
+                    200,
+                    text="<html>login</html>",
+                    headers={"Set-Cookie": "JSESSIONID=pre-login-session; Path=/"},
+                )
+            return httpx.Response(200, text="<html>still login</html>")
+
+        respx.get("https://passport.zhihuishu.com/login").mock(side_effect=login_page_side_effect)
+        respx.get("https://passport.zhihuishu.com/qrCodeLogin/getLoginQrImg").mock(
+            return_value=httpx.Response(200, json={"qrToken": "no-caslogc", "img": "aW1n"})
+        )
+        respx.get("https://passport.zhihuishu.com/qrCodeLogin/getLoginQrInfo").mock(
+            return_value=httpx.Response(200, json={"status": 1, "oncePassword": "otp"})
+        )
+
+        with pytest.raises(LoginFailed, match="CASLOGC"):
+            login_manager.login_with_qr(lambda img: None)
+
+    def test_follows_redirect_and_captures_caslogc(self, login_manager: LoginManager, mock_http: Any) -> None:
+        """最终登录请求返回 302 时跟随跳转，并从跳转响应中拿到 CASLOGC"""
+        # 首次访问登录页：无 CASLOGC
+        # 第二次（带 pwd）返回 302 到 service，CASLOGC 由 service 响应下发
+        login_page_calls = 0
+
+        def login_page_side_effect(_request: object) -> httpx.Response:
+            nonlocal login_page_calls
+            login_page_calls += 1
+            if login_page_calls == 1:
+                return httpx.Response(200, text="<html>login</html>")
+            return httpx.Response(
+                302,
+                headers={"Location": "https://onlineservice-api.zhihuishu.com/login/gologin?ticket=ST-1"},
+            )
+
+        respx.get("https://passport.zhihuishu.com/login").mock(side_effect=login_page_side_effect)
+        respx.get("https://onlineservice-api.zhihuishu.com/login/gologin").mock(
+            return_value=httpx.Response(
+                200,
+                text="<html>ok</html>",
+                headers={"Set-Cookie": 'CASLOGC={"uuid":"redirect-uuid"}; Domain=zhihuishu.com; Path=/'},
+            )
+        )
+        respx.get("https://passport.zhihuishu.com/qrCodeLogin/getLoginQrImg").mock(
+            return_value=httpx.Response(200, json={"qrToken": "redirect-token", "img": "aW1n"})
+        )
+        respx.get("https://passport.zhihuishu.com/qrCodeLogin/getLoginQrInfo").mock(
+            return_value=httpx.Response(200, json={"status": 1, "oncePassword": "otp"})
+        )
+
+        result = login_manager.login_with_qr(lambda img: None)
+
+        assert result.success is True
+        assert result.uuid == "redirect-uuid"

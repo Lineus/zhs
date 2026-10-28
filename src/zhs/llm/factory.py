@@ -56,5 +56,7 @@ class LLMProviderFactory:
                 api_key=ai_config.api_key,
                 base_url=ai_config.base_url,
                 model_name=ai_config.model,
+                max_token=ai_config.max_token,
+                extra_headers=ai_config.extra_headers,
             )
         return None

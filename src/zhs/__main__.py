@@ -152,8 +152,11 @@ def login(
 
     print(msg_info("请使用智慧树 APP 扫描二维码登录"))
     print(msg_warn(f"二维码已保存到: {config.qr.image_path}"))
-    _do_login(login_mgr, config, show_in_terminal)
-    print(msg_done("登录成功！Cookie 已保存，现在可以运行 zhs play 刷课了"))
+    _do_login(login_mgr, config, show_in_terminal, session=session)
+    if config.save_cookies:
+        print(msg_done("登录成功！Cookie 已保存，现在可以运行 zhs play 刷课了"))
+    else:
+        print(msg_done("登录成功！但 save_cookies = false，登录态未保存，下次运行需要重新登录"))
 
 
 # ---------------------------------------------------------------------------

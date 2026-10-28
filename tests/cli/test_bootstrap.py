@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from zhs.cli.bootstrap import (
@@ -159,8 +160,8 @@ class TestTryRestoreCookies:
         assert result is True
         mock_list_to_cookies.assert_called_once()
 
-    def test_empty_courses_returns_false(self, tmp_path: Path) -> None:
-        """课程列表为空返回 False"""
+    def test_empty_courses_returns_true(self, tmp_path: Path) -> None:
+        """课程列表为空仍视为登录有效（账号可能只有 Hike/AI 课程）"""
         config = _make_config()
         session = MagicMock()
         cookies_path = tmp_path / "cookies.json"
@@ -176,7 +177,44 @@ class TestTryRestoreCookies:
             mock_mgr.get_course_list.return_value = []
             result = try_restore_cookies(session, config)
 
+        assert result is True
+
+    def test_http_401_returns_false_with_reason(self, tmp_path: Path) -> None:
+        """HTTP 401 视为 Cookie 失效，并通过 on_error 返回原因"""
+        config = _make_config()
+        session = MagicMock()
+        cookies_path = tmp_path / "cookies.json"
+        cookies_path.write_text("[]", encoding="utf-8")
+        reasons: list[str] = []
+
+        request = httpx.Request("POST", "https://onlineservice-api.zhihuishu.com/x")
+        response = httpx.Response(401, json={"code": 401, "message": "Forbidden"}, request=request)
+
+        with (
+            patch("zhs.utils.path.get_data_dir", return_value=tmp_path),
+            patch("zhs.utils.cookie.list_to_cookies"),
+            patch("zhs.zhidao.course.ZhidaoCourseManager") as mock_mgr_cls,
+        ):
+            mock_mgr = MagicMock()
+            mock_mgr_cls.return_value = mock_mgr
+            mock_mgr.get_course_list.side_effect = httpx.HTTPStatusError(
+                "401 Unauthorized", request=request, response=response
+            )
+            result = try_restore_cookies(session, config, on_error=reasons.append)
+
         assert result is False
+        assert reasons and "401" in reasons[0]
+
+    def test_missing_cookie_file_reason_includes_path(self, tmp_path: Path) -> None:
+        """Cookie 文件不存在时原因包含路径，便于排查工作目录不一致"""
+        config = _make_config()
+        reasons: list[str] = []
+
+        with patch("zhs.utils.path.get_data_dir", return_value=tmp_path):
+            result = try_restore_cookies(MagicMock(), config, on_error=reasons.append)
+
+        assert result is False
+        assert reasons and "cookies.json" in reasons[0]
 
     def test_invalid_json_returns_false(self, tmp_path: Path) -> None:
         """cookies.json 损坏返回 False"""
@@ -265,7 +303,9 @@ class TestDoLogin:
         assert not cookies_path.exists()
 
     def test_no_cookies_does_not_save(self, tmp_path: Path) -> None:
-        """登录成功但 cookies 为空时不保存"""
+        """登录成功但 cookies 为空时不保存并报错退出"""
+        import typer
+
         config = _make_config()
         login_mgr = MagicMock()
         login_result = MagicMock()
@@ -273,7 +313,10 @@ class TestDoLogin:
         login_result.cookies = None
         login_mgr.login_with_qr.return_value = login_result
 
-        with patch("zhs.utils.path.get_data_dir", return_value=tmp_path):
+        with (
+            patch("zhs.utils.path.get_data_dir", return_value=tmp_path),
+            pytest.raises(typer.Exit),
+        ):
             do_login(login_mgr, config, show_in_terminal=False)
 
         cookies_path = tmp_path / "cookies.json"
@@ -282,10 +325,11 @@ class TestDoLogin:
     def test_qr_callback_called_when_show_in_terminal(self) -> None:
         """show_in_terminal=True 时 qr_callback 调用 _show_qr_img"""
         config = _make_config()
+        config.save_cookies = False
         login_mgr = MagicMock()
         login_result = MagicMock()
         login_result.success = True
-        login_result.cookies = None
+        login_result.cookies = [{"name": "foo", "value": "bar"}]
         login_mgr.login_with_qr.return_value = login_result
 
         with patch("zhs.utils.display.show_qrcode_img"):
@@ -299,10 +343,11 @@ class TestDoLogin:
     def test_qr_callback_not_called_when_not_show_in_terminal(self) -> None:
         """show_in_terminal=False 时 qr_callback 不调用 _show_qr_img"""
         config = _make_config()
+        config.save_cookies = False
         login_mgr = MagicMock()
         login_result = MagicMock()
         login_result.success = True
-        login_result.cookies = None
+        login_result.cookies = [{"name": "foo", "value": "bar"}]
         login_mgr.login_with_qr.return_value = login_result
 
         with patch("zhs.utils.display.show_qrcode_img") as mock_show:
@@ -361,6 +406,7 @@ class TestInitLlm:
         config.ai.base_url = "https://api.openai.com/v1"
         config.ai.model = "gpt-4o-mini"
         config.ai.max_token = 4096
+        config.ai.extra_headers = {"x-opencode-session": "sess-1"}
 
         provider = init_llm(config)
         assert provider is not None
@@ -368,6 +414,7 @@ class TestInitLlm:
         from zhs.llm.openai import OpenAIProvider
 
         assert isinstance(provider, OpenAIProvider)
+        assert provider._extra_headers["x-opencode-session"] == "sess-1"
 
 
 class TestInitQuestionBank:

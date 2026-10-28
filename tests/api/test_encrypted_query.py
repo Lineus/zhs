@@ -182,6 +182,25 @@ class TestHikeQuery:
                 query.query("hike", "https://hike.example.com/api", data={})
             assert exc_info.value.code == 403
 
+    def test_status_field_is_accepted(self, query: EncryptedQuery) -> None:
+        """部分 Hike 接口用 status 而非 code 表示成功"""
+        with respx.mock:
+            respx.get("https://hike.example.com/api").mock(
+                return_value=httpx.Response(200, json={"status": 200, "rt": []})
+            )
+            result = query.query("hike", "https://hike.example.com/api", data={})
+            assert result["rt"] == []
+
+    def test_non_200_status_field_raises_api_error(self, query: EncryptedQuery) -> None:
+        """status 字段非 200 时抛 ApiError"""
+        with respx.mock:
+            respx.get("https://hike.example.com/api").mock(
+                return_value=httpx.Response(200, json={"status": 403, "msg": "forbidden"})
+            )
+            with pytest.raises(ApiError) as exc_info:
+                query.query("hike", "https://hike.example.com/api", data={})
+            assert exc_info.value.code == 403
+
 
 # ---------------------------------------------------------------------------
 # ai_exam 查询

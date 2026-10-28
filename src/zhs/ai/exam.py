@@ -282,6 +282,7 @@ class ExamCtx(AiExamBase):
             answers, source = self._get_answer(question)
             if answers:
                 answer_str = self._format_answer(answers, question.question_type)
+                self._submitted_answer_str[sheet.question_id] = answer_str
                 pending.append(
                     {
                         "questionId": sheet.question_id,

@@ -210,7 +210,14 @@ class EncryptedQuery:
             data["signature"] = sign
 
         result = self._http.api_query(url, data=data, method=method)
-        status = result.get("code", 0)
+        # Hike 各接口返回码字段不统一：部分接口用 code，部分用 status；
+        # 两者都缺失时视为成功（HTTP 状态已由 api_query 校验）。
+        status = result.get("code", result.get("status", 200))
+        if isinstance(status, str) and status.isdigit():
+            status = int(status)
         if status != 200:
-            raise ApiError(code=status, message=result.get("message", ""))
+            raise ApiError(
+                code=status if isinstance(status, int) else -1,
+                message=result.get("message", result.get("msg", "")),
+            )
         return result

@@ -74,7 +74,7 @@ def setup_logging(config: AppConfig, log_dir: Path | None = None) -> None:
 
     Args:
         config: 应用配置
-        log_dir: 日志文件目录，默认为 .zhs/logs/
+        log_dir: 日志文件目录，默认为 ~/.zhs/logs/
     """
     global _initialized  # noqa: PLW0603
     if _initialized:

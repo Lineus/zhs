@@ -16,6 +16,16 @@ class TestGetDataDir:
         result = get_data_dir()
         assert isinstance(result, Path)
 
+    def test_uses_home_directory(self, tmp_path: Path, monkeypatch: object) -> None:
+        """get_data_dir() 固定在用户主目录，与当前工作目录无关"""
+        import zhs.utils.path as path_mod
+
+        monkeypatch.setattr(path_mod.Path, "home", classmethod(lambda cls: tmp_path))  # type: ignore[attr-defined]
+
+        result = get_data_dir()
+        assert result == tmp_path / ".zhs"
+        assert result.is_dir()
+
     def test_creates_directory_if_not_exists(self, tmp_path: Path, monkeypatch: object) -> None:
         """get_data_dir() 在目录不存在时创建它"""
         import zhs.utils.path as path_mod

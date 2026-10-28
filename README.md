@@ -234,6 +234,7 @@ api_key = ""             # OpenAI-compatible API Key (used by AI courses when us
 base_url = "https://api.openai.com/v1"
 model = "gpt-4o-mini"
 max_token = 27900
+# extra_headers = { "x-opencode-session" = "zhs-my-session" }  # custom headers for some providers
 
 [crypto]                 # Encryption keys (generally no modification needed)
 [urls]                   # API URLs (generally no modification needed)

@@ -268,3 +268,35 @@ class TestOpenAICompletion:
         provider.completion("test")
         call_kwargs = mock_client.chat.completions.create.call_args[1]
         assert call_kwargs["model"] == "gpt-3.5-turbo"
+
+
+class TestCustomHeaders:
+    """自定义请求头（部分服务如 OpenCode Go 要求 x-opencode-session）"""
+
+    @patch("zhs.llm.openai.OpenAI")
+    def test_default_user_agent(self, mock_openai_cls: MagicMock) -> None:
+        """默认以 zhs 标识客户端，而不是通用 SDK"""
+        OpenAIProvider(api_key="test-key")
+        headers = mock_openai_cls.call_args[1]["default_headers"]
+        assert headers["User-Agent"].startswith("zhs/")
+
+    @patch("zhs.llm.openai.OpenAI")
+    def test_extra_headers_passed(self, mock_openai_cls: MagicMock) -> None:
+        """extra_headers 透传给 OpenAI 客户端"""
+        OpenAIProvider(
+            api_key="test-key",
+            extra_headers={"x-opencode-session": "sess-1"},
+        )
+        headers = mock_openai_cls.call_args[1]["default_headers"]
+        assert headers["x-opencode-session"] == "sess-1"
+        assert headers["User-Agent"].startswith("zhs/")
+
+    @patch("zhs.llm.openai.OpenAI")
+    def test_extra_headers_override_user_agent(self, mock_openai_cls: MagicMock) -> None:
+        """extra_headers 可以覆盖默认 User-Agent"""
+        OpenAIProvider(
+            api_key="test-key",
+            extra_headers={"User-Agent": "custom-agent/9.9"},
+        )
+        headers = mock_openai_cls.call_args[1]["default_headers"]
+        assert headers["User-Agent"] == "custom-agent/9.9"

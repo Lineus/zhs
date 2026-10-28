@@ -90,11 +90,16 @@ class TestAIConfig:
         assert ai.base_url == "https://api.openai.com/v1"
         assert ai.model == "gpt-4o-mini"
         assert ai.max_token == 27900
+        assert ai.extra_headers == {}
 
     def test_custom_values(self) -> None:
         ai = AIConfig(api_key="sk-test", model="deepseek-v4-pro")
         assert ai.api_key == "sk-test"
         assert ai.model == "deepseek-v4-pro"
+
+    def test_extra_headers(self) -> None:
+        ai = AIConfig(extra_headers={"x-opencode-session": "sess-1"})
+        assert ai.extra_headers == {"x-opencode-session": "sess-1"}
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +286,7 @@ base = "http://localhost:8080"
 api_key = "sk-test"
 model = "deepseek-v4-pro"
 max_token = 16000
+extra_headers = { "x-opencode-session" = "sess-1" }
 """
         )
         mgr = ConfigManager(config_file)
@@ -288,6 +294,7 @@ max_token = 16000
         assert cfg.ai.api_key == "sk-test"
         assert cfg.ai.model == "deepseek-v4-pro"
         assert cfg.ai.max_token == 16000
+        assert cfg.ai.extra_headers == {"x-opencode-session": "sess-1"}
 
     def test_load_question_bank_section(self, tmp_path: Path) -> None:
         """加载 question_bank 子配置"""
@@ -365,7 +372,7 @@ class TestConfigManagerSave:
         cfg = AppConfig(
             crypto=CryptoConfig(iv="customiv12345678"),
             urls=UrlConfig(base="http://localhost:8080"),
-            ai=AIConfig(api_key="sk-test", model="gpt-4"),
+            ai=AIConfig(api_key="sk-test", model="gpt-4", extra_headers={"x-opencode-session": "sess-1"}),
         )
         mgr = ConfigManager(config_file)
         mgr.save(cfg)
@@ -374,6 +381,7 @@ class TestConfigManagerSave:
         assert loaded.urls.base == "http://localhost:8080"
         assert loaded.ai.api_key == "sk-test"
         assert loaded.ai.model == "gpt-4"
+        assert loaded.ai.extra_headers == {"x-opencode-session": "sess-1"}
 
     def test_save_preserves_question_bank(self, tmp_path: Path) -> None:
         """保存和加载保留 question_bank 配置"""
